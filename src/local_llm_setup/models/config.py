@@ -131,8 +131,8 @@ class ApiKeyEntry(BaseModel):
 
 class NginxConfig(BaseModel):
     enabled: bool = False
-    listen_port: int = 80
-    server_name: str = "localhost"
+    listen_port: int = 8080
+    server_name: str = "_"
     upstream_port: int = 8000
     enable_cors: bool = True
     client_max_body_size: str = "50m"
@@ -140,6 +140,7 @@ class NginxConfig(BaseModel):
     api_key_auth: bool = False
     api_keys: list[ApiKeyEntry] = Field(default_factory=list)
     bind_host: str = "0.0.0.0"
+    tunnel_enabled: bool = True
 
 
 class SetupConfig(BaseModel):

@@ -104,7 +104,7 @@ def _build_service(fc: FrameworkConfig, config: SetupConfig) -> dict[str, Any]:
 
     if fc.framework == Framework.OLLAMA:
         service["volumes"] = ["ollama_data:/root/.ollama"]
-        service["healthcheck"]["test"] = ["CMD-SHELL", "curl -sf http://127.0.0.1:11434/ || exit 1"]
+        service["healthcheck"]["test"] = ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
     elif fc.framework == Framework.LLAMACPP:
         service["volumes"] = ["./models:/models:ro"]
         service["command"] = _build_command(fc)
@@ -155,6 +155,15 @@ def render_compose(config: SetupConfig) -> str:
         if config.nginx.api_key_auth:
             services["nginx"]["volumes"].append("./api_keys.map:/etc/nginx/api_keys.map:ro")
 
+        if config.nginx.tunnel_enabled:
+            services["cloudflared"] = {
+                "image": "cloudflare/cloudflared:latest",
+                "container_name": "local-llm-tunnel",
+                "restart": "unless-stopped",
+                "command": "tunnel --no-autoupdate --url http://nginx:80",
+                "depends_on": ["nginx"],
+            }
+
     if any(fc.framework == Framework.OLLAMA for fc in config.frameworks):
         volumes["ollama_data"] = {}
 
@@ -185,10 +194,14 @@ def render_run_commands(config: SetupConfig) -> list[str]:
     ]
     for fc in config.frameworks:
         if fc.framework == Framework.OLLAMA:
+            cmds.append(
+                "until docker compose exec -T ollama ollama list >/dev/null 2>&1; do sleep 3; done"
+            )
             cmds.append(f"docker compose exec ollama ollama pull {fc.model.name}")
     if config.nginx.enabled:
-        cmds.append(f"curl http://{config.nginx.server_name}:{config.nginx.listen_port}/health")
+        cmds.append(f"curl -sS http://{config.nginx.server_name}:{config.nginx.listen_port}/health")
     else:
         fc = config.frameworks[0]
-        cmds.append(f"curl http://{fc.bind_host}:{fc.port}/")
+        cmds.append(f"curl -sS http://{fc.bind_host}:{fc.port}/")
+    cmds.append("docker compose down")
     return cmds

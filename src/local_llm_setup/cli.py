@@ -15,6 +15,8 @@ from local_llm_setup.detect import detect_host, run_doctor
 from local_llm_setup.models.config import SetupConfig
 from local_llm_setup.profiles import load_profile, save_profile
 from local_llm_setup.renderers import generate
+from local_llm_setup.runner import deploy, stop_stack
+from local_llm_setup.urls import build_access_urls, format_access_lines
 
 app = typer.Typer(
     name="local-llm-setup",
@@ -94,6 +96,8 @@ def generate_cmd(
     config: Path = typer.Option(..., "--config", "-c", help="Profile YAML path"),
     output: Path = typer.Option(Path("./output"), "--output", "-o"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Validate only, do not write files"),
+    run_after: bool = typer.Option(False, "--run", help="Start Docker after generating"),
+    no_pull: bool = typer.Option(False, "--no-pull", help="Skip docker compose pull when using --run"),
 ) -> None:
     """Generate docker-compose and configs from a profile."""
     setup = load_profile(config)
@@ -112,9 +116,98 @@ def generate_cmd(
     for w in result.warnings:
         console.print(f"[yellow]Warning:[/yellow] {w}")
 
+    if run_after and not dry_run:
+        console.print("\n[bold]Deploying with Docker...[/bold]")
+        deploy_result = deploy(
+            setup,
+            pull=not no_pull,
+            on_output=lambda line: console.print(line),
+            on_status=lambda msg: console.print(f"[cyan]→ {msg}[/cyan]"),
+        )
+        if deploy_result.success:
+            console.print("[green]Docker stack is running.[/green]")
+            if deploy_result.access_urls:
+                console.print("\n[bold]Access URLs:[/bold]")
+                for line in format_access_lines(deploy_result.access_urls, markup=False):
+                    if line.strip():
+                        console.print(f"  {line.strip()}")
+        else:
+            console.print(f"[red]Deploy failed:[/red] {deploy_result.error}")
+            raise typer.Exit(1)
+        return
+
     console.print("\n[bold]Run commands:[/bold]")
     for cmd in result.run_commands:
         console.print(f"  {cmd}")
+    urls = build_access_urls(setup)
+    console.print("\n[bold]Access URLs (after deploy):[/bold]")
+    for line in format_access_lines(urls, markup=False):
+        if line.strip():
+            console.print(f"  {line.strip()}")
+
+
+@app.command()
+def run(
+    config: Path = typer.Option(..., "--config", "-c", help="Profile YAML path"),
+    output: Path = typer.Option(Path("./output"), "--output", "-o"),
+    no_pull: bool = typer.Option(False, "--no-pull", help="Skip docker compose pull"),
+) -> None:
+    """Start the generated Docker stack."""
+    setup = load_profile(config)
+    setup.output_dir = output
+    compose_file = output / "docker-compose.yaml"
+    if not compose_file.exists():
+        console.print(f"[red]Missing {compose_file}[/red] — run generate first.")
+        raise typer.Exit(1)
+
+    console.print(f"[bold]Deploying from {output.resolve()}...[/bold]")
+    result = deploy(
+        setup,
+        pull=not no_pull,
+        on_output=lambda line: console.print(line),
+        on_status=lambda msg: console.print(f"[cyan]→ {msg}[/cyan]"),
+    )
+    if result.success:
+        console.print("[green]Docker stack is running.[/green]")
+        if result.access_urls:
+            console.print("\n[bold]Access URLs:[/bold]")
+            for line in format_access_lines(result.access_urls, markup=False):
+                if line.strip():
+                    console.print(f"  {line.strip()}")
+    else:
+        console.print(f"[red]Deploy failed:[/red] {result.error}")
+        raise typer.Exit(1)
+
+
+@app.command()
+def stop(
+    output: Path = typer.Option(Path("./output"), "--output", "-o", help="Output directory with docker-compose.yaml"),
+    config: Optional[Path] = typer.Option(None, "--config", "-c", help="Profile YAML (uses its output_dir if set)"),
+    volumes: bool = typer.Option(False, "--volumes", "-v", help="Remove volumes (deletes downloaded models/data)"),
+) -> None:
+    """Stop the running Docker stack."""
+    out = output
+    if config:
+        setup = load_profile(config)
+        out = setup.output_dir
+
+    compose_file = out / "docker-compose.yaml"
+    if not compose_file.exists():
+        console.print(f"[red]Missing {compose_file}[/red] — run generate first or check --output.")
+        raise typer.Exit(1)
+
+    console.print(f"[bold]Stopping stack in {out.resolve()}...[/bold]")
+    result = stop_stack(
+        out,
+        remove_volumes=volumes,
+        on_output=lambda line: console.print(line),
+        on_status=lambda msg: console.print(f"[cyan]→ {msg}[/cyan]"),
+    )
+    if result.success:
+        console.print("[green]Docker stack stopped.[/green]")
+    else:
+        console.print(f"[red]Stop failed:[/red] {result.error}")
+        raise typer.Exit(1)
 
 
 @app.command()

@@ -8,9 +8,19 @@ from local_llm_setup.frameworks import validate_setup
 from local_llm_setup.models.config import GeneratedOutput, SetupConfig
 from local_llm_setup.renderers.compose import render_compose, render_env, render_run_commands
 from local_llm_setup.renderers.nginx import render_api_keys_map, render_nginx_conf
+from local_llm_setup.urls import build_access_urls, render_access_md
+
+
+def normalize_access(config: SetupConfig) -> SetupConfig:
+    """When nginx is enabled, expose only nginx externally."""
+    if config.nginx.enabled and config.frameworks:
+        config.frameworks[0].bind_host = "127.0.0.1"
+        config.nginx.bind_host = "0.0.0.0"
+    return config
 
 
 def generate(config: SetupConfig, dry_run: bool = False) -> GeneratedOutput:
+    config = normalize_access(config.model_copy(deep=True))
     issues = validate_setup(config.frameworks, config.host)
     errors = [i for i in issues if i.level == "error"]
     warnings = [i.message for i in issues if i.level in ("warn", "info")]
@@ -41,6 +51,7 @@ def generate(config: SetupConfig, dry_run: bool = False) -> GeneratedOutput:
             "# Run commands\n\n```bash\n" + "\n".join(run_commands) + "\n```\n",
             encoding="utf-8",
         )
+        (out / "ACCESS.md").write_text(render_access_md(config), encoding="utf-8")
 
     return GeneratedOutput(
         compose_yaml=compose_yaml,

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from textual.app import ComposeResult
-from textual.containers import Vertical
+from textual.binding import Binding
+from textual.dom import DOMNode
 from textual.message import Message
-from textual.reactive import reactive
-from textual.widgets import Label, Static
+from textual.widget import Widget
+from textual.widgets import Static
 
 
 class ChoiceItem(Static):
@@ -18,12 +19,12 @@ class ChoiceItem(Static):
         padding: 0 1;
     }
     ChoiceItem.selected {
-        background: $accent;
-        color: $text;
+        background: #2a2a00;
+        color: #ffe566;
     }
-    ChoiceItem.checked {
-        color: $success;
-    }
+ChoiceItem.checked {
+    color: #3ecf3e;
+}
     """
 
     def __init__(self, choice_id: str, label: str, **kwargs) -> None:
@@ -34,9 +35,13 @@ class ChoiceItem(Static):
         self.checked = False
 
     def render(self) -> str:
-        mark = "[x]" if self.checked else "[ ]"
-        prefix = ">" if self.selected else " "
-        return f"{prefix} {mark} {self.choice_label}"
+        if self.checked:
+            mark = "[bold #3ecf3e]✓[/]"
+        else:
+            mark = " "
+        prefix = "›" if self.selected else " "
+        label = f"[#3ecf3e]{self.choice_label}[/]" if self.checked else self.choice_label
+        return f"  {prefix} {mark} {label}"
 
     def set_selected(self, value: bool) -> None:
         self.selected = value
@@ -47,22 +52,35 @@ class ChoiceItem(Static):
         self.refresh()
 
 
-class ChoiceList(Static):
+class ChoiceList(Widget):
     """Keyboard-navigable choice list. Space toggles, Enter confirms."""
 
     DEFAULT_CSS = """
     ChoiceList {
         height: auto;
-        border: solid $primary;
-        padding: 0 1;
+        padding: 0;
     }
     """
 
+    BINDINGS = [
+        Binding("up", "cursor_up", "Up", show=False),
+        Binding("down", "cursor_down", "Down", show=False),
+        Binding("k", "cursor_up", "Up", show=False),
+        Binding("j", "cursor_down", "Down", show=False),
+        Binding("space", "toggle", "Select", show=False),
+        Binding("enter", "submit", "Confirm", show=False),
+    ]
+
     class Submitted(Message):
-        def __init__(self, selected_ids: list[str], multi: bool) -> None:
+        def __init__(self, sender: ChoiceList, selected_ids: list[str], multi: bool) -> None:
             super().__init__()
+            self._choice_list = sender
             self.selected_ids = selected_ids
             self.multi = multi
+
+        @property
+        def control(self) -> DOMNode | None:
+            return self._choice_list
 
     def __init__(
         self,
@@ -90,21 +108,21 @@ class ChoiceList(Static):
     def on_mount(self) -> None:
         self.can_focus = True
 
-    def key_up(self) -> None:
+    def action_cursor_up(self) -> None:
         if not self._items:
             return
         self._items[self._index].set_selected(False)
         self._index = (self._index - 1) % len(self._items)
         self._items[self._index].set_selected(True)
 
-    def key_down(self) -> None:
+    def action_cursor_down(self) -> None:
         if not self._items:
             return
         self._items[self._index].set_selected(False)
         self._index = (self._index + 1) % len(self._items)
         self._items[self._index].set_selected(True)
 
-    def key_space(self) -> None:
+    def action_toggle(self) -> None:
         if not self._items:
             return
         if self.multi:
@@ -114,7 +132,7 @@ class ChoiceList(Static):
                 item.checked = i == self._index
                 item.refresh()
 
-    def key_enter(self) -> None:
+    def action_submit(self) -> None:
         if self.multi:
             ids = [item.choice_id for item in self._items if item.checked]
             if not ids and not self.allow_empty:
@@ -122,47 +140,9 @@ class ChoiceList(Static):
                 ids = [self._items[self._index].choice_id]
         else:
             ids = [self._items[self._index].choice_id]
-        self.post_message(self.Submitted(ids, self.multi))
+        self.post_message(self.Submitted(self, ids, self.multi))
 
     def selected_ids(self) -> list[str]:
         if self.multi:
             return [item.choice_id for item in self._items if item.checked]
         return [self._items[self._index].choice_id] if self._items else []
-
-
-class StepPanel(Vertical):
-    """Wizard step with title, body, and optional input hint."""
-
-    title: reactive[str] = reactive("")
-    hint: reactive[str] = reactive("↑/↓ navigate · Space select · Enter confirm · q quit")
-
-    DEFAULT_CSS = """
-    StepPanel {
-        height: 1fr;
-        padding: 1 2;
-    }
-    StepPanel #step-title {
-        text-style: bold;
-        height: 1;
-        margin-bottom: 1;
-    }
-    StepPanel #step-hint {
-        dock: bottom;
-        height: 1;
-        color: $text-muted;
-    }
-    """
-
-    def __init__(self, title: str, **kwargs) -> None:
-        super().__init__(**kwargs)
-        self.title = title
-
-    def compose(self) -> ComposeResult:
-        yield Label(id="step-title")
-        yield Label(id="step-hint")
-
-    def watch_title(self, value: str) -> None:
-        self.query_one("#step-title", Label).update(value)
-
-    def watch_hint(self, value: str) -> None:
-        self.query_one("#step-hint", Label).update(value)

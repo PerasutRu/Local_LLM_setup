@@ -1,0 +1,426 @@
+"""Run generated Docker Compose stacks."""
+
+from __future__ import annotations
+
+import re
+import shlex
+import subprocess
+import time
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from local_llm_setup.models.config import Framework, SetupConfig
+from local_llm_setup.renderers import normalize_access
+from local_llm_setup.urls import AccessUrls, build_access_urls, enrich_access_urls, format_access_lines
+
+_TUNNEL_URL_RE = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
+
+
+@dataclass
+class DeployStep:
+    command: str
+    returncode: int
+    stdout: str
+    stderr: str
+
+    @property
+    def ok(self) -> bool:
+        return self.returncode == 0
+
+
+@dataclass
+class DeployResult:
+    success: bool
+    steps: list[DeployStep] = field(default_factory=list)
+    error: str | None = None
+    access_urls: AccessUrls | None = None
+
+
+def _compose_base() -> list[str]:
+    try:
+        r = subprocess.run(
+            ["docker", "compose", "version"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if r.returncode == 0:
+            return ["docker", "compose"]
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        pass
+    return ["docker-compose"]
+
+
+def _announce(
+    on_output: Callable[[str], None] | None,
+    on_status: Callable[[str], None] | None,
+    step: int,
+    total: int,
+    label: str,
+) -> None:
+    if on_status:
+        on_status(f"[{step}/{total}] {label}")
+    if on_output:
+        on_output("")
+        on_output(f"[bold #c9a227][{step}/{total}][/bold #c9a227] {label}")
+
+
+def _run(
+    cmd: list[str],
+    cwd: Path,
+    *,
+    timeout: int = 600,
+    max_timeout: int | None = None,
+    on_output: Callable[[str], None] | None = None,
+) -> DeployStep:
+    """Run a subprocess, streaming stdout.
+
+    ``timeout`` is an *idle* limit: the process is killed only after this many
+    seconds without any output (so long-running pulls keep going while Docker
+    prints progress).  ``max_timeout``, when set, is an absolute ceiling.
+    """
+    if on_output:
+        on_output(f"[dim]$ {' '.join(cmd)}[/dim]")
+
+    lines: list[str] = []
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+    except FileNotFoundError:
+        step = DeployStep(command=" ".join(cmd), returncode=127, stdout="", stderr="command not found")
+        if on_output:
+            on_output("[red]command not found[/red]")
+        return step
+
+    assert proc.stdout is not None
+    start = time.monotonic()
+    last_output = start
+    timed_out = False
+
+    for raw in proc.stdout:
+        now = time.monotonic()
+        if now - last_output > timeout:
+            timed_out = True
+            proc.kill()
+            break
+        if max_timeout is not None and now - start > max_timeout:
+            timed_out = True
+            proc.kill()
+            break
+        line = raw.rstrip("\n\r")
+        lines.append(line)
+        last_output = time.monotonic()
+        if on_output and line.strip():
+            on_output(f"  {line}")
+
+    if not timed_out:
+        proc.wait()
+    else:
+        proc.wait()
+
+    stdout = "\n".join(lines)
+    if timed_out:
+        step = DeployStep(command=" ".join(cmd), returncode=124, stdout=stdout, stderr="timed out")
+        if on_output:
+            on_output("[red]✗ timed out[/red]")
+        return step
+
+    step = DeployStep(
+        command=" ".join(cmd),
+        returncode=proc.returncode or 0,
+        stdout=stdout,
+        stderr="",
+    )
+    if on_output:
+        if step.ok:
+            on_output("[green]✓ done[/green]")
+        else:
+            err = stdout.splitlines()[-1] if stdout else f"exit {step.returncode}"
+            on_output(f"[red]✗ failed ({err})[/red]")
+    return step
+
+
+def _wait_for_ollama(
+    compose: list[str],
+    cwd: Path,
+    *,
+    timeout: int = 180,
+    on_output: Callable[[str], None] | None = None,
+) -> bool:
+    """Poll until the Ollama daemon inside the stack accepts API requests."""
+    deadline = time.monotonic() + timeout
+    attempt = 0
+    while time.monotonic() < deadline:
+        attempt += 1
+        try:
+            result = subprocess.run(
+                [*compose, "exec", "-T", "ollama", "ollama", "list"],
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            result = None
+        if result is not None and result.returncode == 0:
+            if on_output:
+                on_output("[green]✓ Ollama server ready[/green]")
+            return True
+        if on_output:
+            on_output(f"[dim]  waiting for Ollama server... ({attempt})[/dim]")
+        time.sleep(3)
+    if on_output:
+        on_output("[red]✗ Ollama server did not become ready in time[/red]")
+    return False
+
+
+def _wait_for_tunnel_url(*, timeout: int = 90) -> str | None:
+    """Read Cloudflare quick-tunnel URL from container logs."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            result = subprocess.run(
+                ["docker", "logs", "local-llm-tunnel"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            match = _TUNNEL_URL_RE.search(result.stdout + result.stderr)
+            if match:
+                return match.group(0)
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+        time.sleep(3)
+    return None
+
+
+def deploy(
+    config: SetupConfig,
+    *,
+    pull: bool = True,
+    on_output: Callable[[str], None] | None = None,
+    on_status: Callable[[str], None] | None = None,
+) -> DeployResult:
+    """Start the generated stack with docker compose."""
+    config = normalize_access(config.model_copy(deep=True))
+    out_dir = Path(config.output_dir).resolve()
+    compose_file = out_dir / "docker-compose.yaml"
+    if not compose_file.exists():
+        return DeployResult(success=False, error=f"Missing {compose_file}")
+
+    if on_output:
+        on_output(f"[#c9a227]deploy[/] · {out_dir}")
+
+    compose = _compose_base()
+    steps: list[DeployStep] = []
+    ollama_models = [fc.model.name for fc in config.frameworks if fc.framework == Framework.OLLAMA]
+    total = (1 if pull else 0) + 1 + (1 if ollama_models else 0) + len(ollama_models)
+    step_no = 0
+
+    if pull:
+        step_no += 1
+        _announce(on_output, on_status, step_no, total, "Pulling Docker images")
+        step = _run(
+            [*compose, "pull"],
+            out_dir,
+            timeout=300,
+            max_timeout=7200,
+            on_output=on_output,
+        )
+        steps.append(step)
+        if not step.ok:
+            return DeployResult(success=False, steps=steps, error=step.stderr or step.stdout or "docker compose pull failed")
+
+    step_no += 1
+    _announce(on_output, on_status, step_no, total, "Starting containers (docker compose up -d)")
+    step = _run([*compose, "up", "-d"], out_dir, on_output=on_output)
+    steps.append(step)
+    if not step.ok:
+        return DeployResult(success=False, steps=steps, error=step.stderr or step.stdout or "docker compose up failed")
+
+    if ollama_models:
+        step_no += 1
+        _announce(on_output, on_status, step_no, total, "Waiting for Ollama server")
+        if not _wait_for_ollama(compose, out_dir, on_output=on_output):
+            return DeployResult(
+                success=False,
+                steps=steps,
+                error="Ollama server did not become ready in time",
+            )
+
+    for model_name in ollama_models:
+        step_no += 1
+        _announce(on_output, on_status, step_no, total, f"Pulling Ollama model: {model_name}")
+        pull_cmd = [*compose, "exec", "-T", "ollama", "ollama", "pull", model_name]
+        step = _run(pull_cmd, out_dir, timeout=300, max_timeout=7200, on_output=on_output)
+        steps.append(step)
+        if not step.ok:
+            return DeployResult(
+                success=False,
+                steps=steps,
+                error=step.stderr or step.stdout or f"failed to pull ollama model {model_name}",
+            )
+
+    if on_status:
+        on_status("Deploy complete")
+
+    access_urls = build_access_urls(config)
+    tunnel_url: str | None = None
+    if config.nginx.enabled and config.nginx.tunnel_enabled:
+        if on_status:
+            on_status("Waiting for public tunnel URL...")
+        if on_output:
+            on_output("[dim]  waiting for Cloudflare tunnel...[/dim]")
+        tunnel_url = _wait_for_tunnel_url()
+        if tunnel_url:
+            access_urls = enrich_access_urls(config, access_urls, tunnel_url=tunnel_url)
+            if on_output:
+                on_output(f"[green]✓ Public URL:[/green] {tunnel_url}")
+        elif on_output:
+            on_output("[yellow]warn:[/yellow] tunnel container started but URL not found in logs")
+
+    if tunnel_url or config.nginx.enabled:
+        try:
+            from local_llm_setup.urls import render_access_md
+
+            access_md = render_access_md(config, access_urls)
+            (out_dir / "ACCESS.md").write_text(access_md, encoding="utf-8")
+        except OSError:
+            pass
+
+    if on_output:
+        on_output("")
+        on_output("[bold green]✓ All steps completed[/bold green]")
+        for line in format_access_lines(access_urls):
+            on_output(line)
+
+    return DeployResult(success=True, steps=steps, access_urls=access_urls)
+
+
+def stop_stack(
+    output_dir: Path,
+    *,
+    remove_volumes: bool = False,
+    on_output: Callable[[str], None] | None = None,
+    on_status: Callable[[str], None] | None = None,
+) -> DeployResult:
+    """Stop the generated Docker Compose stack."""
+    out_dir = Path(output_dir).resolve()
+    compose_file = out_dir / "docker-compose.yaml"
+    if not compose_file.exists():
+        return DeployResult(success=False, error=f"Missing {compose_file}")
+
+    if on_output:
+        on_output(f"[#c9a227]stop[/] · {out_dir}")
+
+    compose = _compose_base()
+    steps: list[DeployStep] = []
+    total = 2
+    step_no = 0
+
+    step_no += 1
+    _announce(on_output, on_status, step_no, total, "Checking running containers")
+    ps_step = _run([*compose, "ps"], out_dir, timeout=60, on_output=on_output)
+    steps.append(ps_step)
+
+    step_no += 1
+    label = "Stopping containers (docker compose down -v)" if remove_volumes else "Stopping containers (docker compose down)"
+    _announce(on_output, on_status, step_no, total, label)
+    down_cmd = [*compose, "down"]
+    if remove_volumes:
+        down_cmd.append("-v")
+    step = _run(down_cmd, out_dir, timeout=120, on_output=on_output)
+    steps.append(step)
+    if not step.ok:
+        return DeployResult(
+            success=False,
+            steps=steps,
+            error=step.stderr or step.stdout or "docker compose down failed",
+        )
+
+    if on_status:
+        on_status("Stack stopped")
+    if on_output:
+        on_output("")
+        on_output("[bold green]✓ Stack stopped[/bold green]")
+
+    return DeployResult(success=True, steps=steps)
+
+
+def run_curl_tests(
+    config: SetupConfig,
+    *,
+    on_output: Callable[[str], None] | None = None,
+    on_status: Callable[[str], None] | None = None,
+) -> DeployResult:
+    """Run generated curl test commands against the running stack."""
+    config = normalize_access(config.model_copy(deep=True))
+    urls = build_access_urls(config)
+    if not urls.test_commands:
+        return DeployResult(success=False, error="No curl test commands available")
+
+    if on_output:
+        on_output("[#c9a227]curl test[/] · checking endpoints")
+    if on_status:
+        on_status("Running curl tests...")
+
+    steps: list[DeployStep] = []
+    for i, cmd in enumerate(urls.test_commands, start=1):
+        if on_output:
+            on_output("")
+            on_output(f"[bold #c9a227][{i}/{len(urls.test_commands)}][/bold #c9a227] {cmd}")
+        try:
+            result = subprocess.run(
+                shlex.split(cmd),
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+        except FileNotFoundError:
+            return DeployResult(success=False, steps=steps, error="curl not found")
+        except subprocess.TimeoutExpired:
+            step = DeployStep(command=cmd, returncode=124, stdout="", stderr="timed out")
+            steps.append(step)
+            if on_output:
+                on_output("[red]✗ timed out[/red]")
+            return DeployResult(success=False, steps=steps, error=f"curl timed out: {cmd}")
+
+        step = DeployStep(
+            command=cmd,
+            returncode=result.returncode,
+            stdout=result.stdout,
+            stderr=result.stderr,
+        )
+        steps.append(step)
+        if on_output:
+            body = (result.stdout or result.stderr or "").strip()
+            preview = body[:400] + ("…" if len(body) > 400 else "")
+            if step.ok:
+                on_output(f"[green]✓ HTTP {result.returncode}[/green]")
+                if preview:
+                    on_output(f"  [dim]{preview}[/dim]")
+            else:
+                on_output(f"[red]✗ exit {result.returncode}[/red]")
+                if preview:
+                    on_output(f"  [red]{preview}[/red]")
+                return DeployResult(
+                    success=False,
+                    steps=steps,
+                    error=f"curl failed: {cmd}",
+                    access_urls=urls,
+                )
+
+    if on_status:
+        on_status("All curl tests passed")
+    if on_output:
+        on_output("")
+        on_output("[bold green]✓ All curl tests passed[/bold green]")
+
+    return DeployResult(success=True, steps=steps, access_urls=urls)

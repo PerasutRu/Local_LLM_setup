@@ -1,24 +1,27 @@
 # Local LLM Setup
 
-TUI wizard for hosting local LLMs with **Ollama**, **vLLM**, **llama.cpp**, and **SGLang**. Detects your OS and hardware, checks dependencies, and generates `docker-compose.yaml`, optional `nginx.conf`, `api_keys.map`, and run commands.
+TUI wizard for hosting local LLMs with **Ollama**, **vLLM**, **llama.cpp**, and **SGLang**. Detects your OS and hardware, checks dependencies, generates `docker-compose.yaml`, optional `nginx.conf`, and can deploy the stack with one command.
 
 ## Features
 
 - Auto-detect OS (Linux, macOS, Windows/WSL), GPU, Docker, CUDA, ROCm, nginx
-- Keyboard-driven TUI (↑/↓ navigate, Space select, Enter confirm)
+- Keyboard-driven TUI (↑/↓ navigate, Space select, Enter confirm, `/` slash commands)
 - Quick or full configuration per framework
 - Model validation (Ollama registry, Hugging Face, GGUF for llama.cpp)
 - Capability flags: vision, audio, tool calling, speculative decoding (MTP)
-- Optional nginx reverse proxy with API key auth
+- Optional nginx reverse proxy with API key auth and Cloudflare quick tunnel
+- Generate & deploy from TUI or CLI (`generate --run`, `run`, `stop`)
+- Access URLs for localhost, LAN, and tunnel — plus curl smoke tests
 - Save/load YAML profiles
 
 ## Quick start
 
 ```bash
 # Install
+python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 
-# Interactive wizard
+# Interactive wizard (generate + start Docker by default)
 local-llm-setup tui
 
 # Check host dependencies
@@ -26,7 +29,46 @@ local-llm-setup doctor
 
 # Generate from profile
 local-llm-setup generate --config profiles/sample.yaml
+
+# Generate and deploy in one step
+local-llm-setup generate --config profiles/sample.yaml --run
+
+# Start or stop an existing stack
+local-llm-setup run --config profiles/sample.yaml
+local-llm-setup stop
 ```
+
+**Full guide (Thai):** [GUIDE.md](GUIDE.md) · **Architecture:** [UML.md](UML.md)
+
+## CLI commands
+
+| Command | Description |
+|---------|-------------|
+| `tui` | Interactive wizard |
+| `doctor` | Check Docker, GPU, CUDA, nginx (`--json` for machine output) |
+| `detect` | Alias for `doctor` |
+| `generate` | Write `output/` from a profile (`--run` to deploy, `--dry-run` to validate) |
+| `run` | Start a generated stack (`--no-pull` to skip image pull) |
+| `stop` | Stop the stack (`--volumes` to remove data volumes) |
+| `save` | Save a config as a named profile |
+
+After `generate` or `run`, the CLI prints **access URLs** (localhost, LAN IP, and Cloudflare tunnel when nginx is enabled).
+
+## TUI slash commands
+
+Press `/` in the wizard to open the command bar:
+
+| Command | Action |
+|---------|--------|
+| `/help` | List commands |
+| `/providers` | Switch Ollama / vLLM |
+| `/deploy` | Regenerate and start the stack |
+| `/test` | Run curl smoke tests against the running API |
+| `/stop` | Stop containers (keep volumes) |
+| `/delete-container` | Stop and remove containers + volumes |
+| `/doctor` | Jump back to Host Doctor |
+
+Press `s` to stop the running stack from any screen.
 
 ## Dockerized setup app
 
@@ -55,6 +97,9 @@ Generated files appear in `./output/`.
 - `nginx.conf` — reverse proxy (if enabled)
 - `api_keys.map` — API key map for nginx (if enabled)
 - `RUN.md` — copy-paste run commands
+- `ACCESS.md` — access URLs and example curl commands
+
+When nginx is enabled, the framework binds to `127.0.0.1` internally and only nginx is exposed on `0.0.0.0`. An optional **cloudflared** sidecar provides a public `trycloudflare.com` URL.
 
 ## Troubleshooting
 
@@ -64,7 +109,7 @@ Generated files appear in `./output/`.
 
 **vLLM/SGLang validation errors on Mac** — Use Ollama or llama.cpp on Apple Silicon.
 
-**Port already in use** — Change the framework port in full config mode or stop the conflicting service.
+**Port already in use** — Default nginx port is `8080`. Change it in full config mode or stop the conflicting service.
 
 **Gated Hugging Face models** — Set `HF_TOKEN` in the wizard or `.env`.
 
