@@ -118,8 +118,9 @@ def generate_cmd(
 
     if run_after and not dry_run:
         console.print("\n[bold]Deploying with Docker...[/bold]")
+        deploy_config = result.config or setup
         deploy_result = deploy(
-            setup,
+            deploy_config,
             pull=not no_pull,
             on_output=lambda line: console.print(line),
             on_status=lambda msg: console.print(f"[cyan]→ {msg}[/cyan]"),
@@ -136,9 +137,9 @@ def generate_cmd(
             raise typer.Exit(1)
         return
 
-    console.print("\n[bold]Run commands:[/bold]")
+    console.print("\n[bold]Commands to run:[/bold]")
     for cmd in result.run_commands:
-        console.print(f"  {cmd}")
+        console.print(f"  [dim]$[/dim] {cmd}")
     urls = build_access_urls(setup)
     console.print("\n[bold]Access URLs (after deploy):[/bold]")
     for line in format_access_lines(urls, markup=False):

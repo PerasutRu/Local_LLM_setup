@@ -32,6 +32,30 @@ def test_nginx_accepts_any_host():
     assert "server_name _;" in conf
     assert "proxy_set_header Host $http_host;" in conf
     assert "proxy_buffering off;" in conf
+    assert "server ollama:11434;" in conf
+
+
+def test_nginx_multi_framework_paths():
+    config = SetupConfig(
+        frameworks=[
+            FrameworkConfig(
+                framework=Framework.OLLAMA,
+                model=ModelConfig(name="llama3.2"),
+                port=11434,
+            ),
+            FrameworkConfig(
+                framework=Framework.VLLM,
+                model=ModelConfig(name="org/model"),
+                port=8000,
+            ),
+        ],
+        nginx=NginxConfig(enabled=True, listen_port=8080),
+    )
+    conf = render_nginx_conf(config)
+    assert "location /ollama/" in conf
+    assert "location /vllm/" in conf
+    assert "proxy_pass http://ollama:11434/;" in conf
+    assert "proxy_pass http://vllm:8000/;" in conf
 
 
 def test_compose_includes_tunnel_when_enabled():
@@ -39,3 +63,35 @@ def test_compose_includes_tunnel_when_enabled():
     assert "cloudflared:" in compose
     assert "trycloudflare" not in compose
     assert "http://nginx:80" in compose
+
+
+def test_compose_uses_shared_docker_network():
+    compose = render_compose(_setup())
+    assert "networks:" in compose
+    assert "local_llm:" in compose
+    assert "local-llm-setup-local_llm" in compose
+    assert "networks:\n    - local_llm" in compose or "- local_llm" in compose
+    assert "ollama:" in compose
+    assert "nginx:" in compose
+
+
+def test_compose_nginx_hides_framework_host_ports():
+    compose = render_compose(_setup())
+    assert "127.0.0.1:11434:11434" not in compose
+    assert "0.0.0.0:8080:80" in compose
+
+
+def test_compose_without_nginx_keeps_framework_ports():
+    setup = SetupConfig(
+        frameworks=[
+            FrameworkConfig(
+                framework=Framework.OLLAMA,
+                model=ModelConfig(name="tinyllama:1.1b"),
+                port=11434,
+            )
+        ],
+        nginx=NginxConfig(enabled=False),
+    )
+    compose = render_compose(setup)
+    assert "127.0.0.1:11434:11434" in compose
+    assert "networks:" in compose

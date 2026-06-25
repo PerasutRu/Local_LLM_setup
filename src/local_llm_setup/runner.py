@@ -17,6 +17,74 @@ from local_llm_setup.urls import AccessUrls, build_access_urls, enrich_access_ur
 _TUNNEL_URL_RE = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
 
 
+def format_shell_command(cmd: list[str], *, cwd: Path | None = None) -> str:
+    """Render a copy-paste shell command."""
+    joined = shlex.join(cmd)
+    if cwd is not None:
+        return f"cd {cwd} && {joined}"
+    return joined
+
+
+def format_steps_summary(steps: list[DeployStep], *, cwd: Path | None = None) -> list[str]:
+    """Human-readable summary of executed commands for terminal output."""
+    if not steps:
+        return []
+    lines = ["", "[bold]Commands executed[/bold]"]
+    for index, step in enumerate(steps, start=1):
+        mark = "[green]✓[/green]" if step.ok else f"[red]✗ {step.returncode}[/red]"
+        lines.append(f"  {mark} [{index}] {step.command}")
+    lines.append("")
+    lines.append("[dim]Copy-paste to replay:[/dim]")
+    for step in steps:
+        argv = shlex.split(step.command)
+        lines.append(f"  {format_shell_command(argv, cwd=cwd)}")
+    return lines
+
+
+def append_commands_log(out_dir: Path, operation: str, steps: list[DeployStep]) -> None:
+    """Append executed commands to output/commands.log for later debugging."""
+    if not steps:
+        return
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
+    lines = [f"# {operation} @ {stamp}", ""]
+    for step in steps:
+        lines.append(f"# exit {step.returncode}")
+        lines.append(step.command)
+        lines.append("")
+    log_path = out_dir / "commands.log"
+    try:
+        with log_path.open("a", encoding="utf-8") as handle:
+            if log_path.exists() and log_path.stat().st_size > 0:
+                handle.write("\n")
+            handle.write("\n".join(lines))
+    except OSError:
+        pass
+
+
+def _emit_steps_summary(
+    steps: list[DeployStep],
+    *,
+    cwd: Path | None = None,
+    on_output: Callable[[str], None] | None = None,
+) -> None:
+    if not on_output:
+        return
+    for line in format_steps_summary(steps, cwd=cwd):
+        on_output(line)
+
+
+def _record_run(
+    out_dir: Path,
+    operation: str,
+    steps: list[DeployStep],
+    on_output: Callable[[str], None] | None,
+) -> None:
+    append_commands_log(out_dir, operation, steps)
+    _emit_steps_summary(steps, cwd=out_dir, on_output=on_output)
+    if on_output and steps:
+        on_output(f"[dim]saved to {out_dir / 'commands.log'}[/dim]")
+
+
 @dataclass
 class DeployStep:
     command: str
@@ -81,7 +149,7 @@ def _run(
     prints progress).  ``max_timeout``, when set, is an absolute ceiling.
     """
     if on_output:
-        on_output(f"[dim]$ {' '.join(cmd)}[/dim]")
+        on_output(f"[dim]$ {format_shell_command(cmd, cwd=cwd)}[/dim]")
 
     lines: list[str] = []
     try:
@@ -94,7 +162,7 @@ def _run(
             bufsize=1,
         )
     except FileNotFoundError:
-        step = DeployStep(command=" ".join(cmd), returncode=127, stdout="", stderr="command not found")
+        step = DeployStep(command=shlex.join(cmd), returncode=127, stdout="", stderr="command not found")
         if on_output:
             on_output("[red]command not found[/red]")
         return step
@@ -127,13 +195,13 @@ def _run(
 
     stdout = "\n".join(lines)
     if timed_out:
-        step = DeployStep(command=" ".join(cmd), returncode=124, stdout=stdout, stderr="timed out")
+        step = DeployStep(command=shlex.join(cmd), returncode=124, stdout=stdout, stderr="timed out")
         if on_output:
             on_output("[red]✗ timed out[/red]")
         return step
 
     step = DeployStep(
-        command=" ".join(cmd),
+        command=shlex.join(cmd),
         returncode=proc.returncode or 0,
         stdout=stdout,
         stderr="",
@@ -157,11 +225,14 @@ def _wait_for_ollama(
     """Poll until the Ollama daemon inside the stack accepts API requests."""
     deadline = time.monotonic() + timeout
     attempt = 0
+    probe = [*compose, "exec", "-T", "ollama", "ollama", "list"]
     while time.monotonic() < deadline:
         attempt += 1
+        if on_output and attempt == 1:
+            on_output(f"[dim]$ {format_shell_command(probe, cwd=cwd)}[/dim]")
         try:
             result = subprocess.run(
-                [*compose, "exec", "-T", "ollama", "ollama", "list"],
+                probe,
                 cwd=cwd,
                 capture_output=True,
                 text=True,
@@ -181,8 +252,15 @@ def _wait_for_ollama(
     return False
 
 
-def _wait_for_tunnel_url(*, timeout: int = 90) -> str | None:
+def _wait_for_tunnel_url(
+    *,
+    timeout: int = 90,
+    on_output: Callable[[str], None] | None = None,
+) -> str | None:
     """Read Cloudflare quick-tunnel URL from container logs."""
+    logs_cmd = ["docker", "logs", "local-llm-tunnel"]
+    if on_output:
+        on_output(f"[dim]$ {format_shell_command(logs_cmd)}[/dim]")
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
@@ -236,6 +314,7 @@ def deploy(
         )
         steps.append(step)
         if not step.ok:
+            _record_run(out_dir, "deploy", steps, on_output)
             return DeployResult(success=False, steps=steps, error=step.stderr or step.stdout or "docker compose pull failed")
 
     step_no += 1
@@ -243,12 +322,14 @@ def deploy(
     step = _run([*compose, "up", "-d"], out_dir, on_output=on_output)
     steps.append(step)
     if not step.ok:
+        _record_run(out_dir, "deploy", steps, on_output)
         return DeployResult(success=False, steps=steps, error=step.stderr or step.stdout or "docker compose up failed")
 
     if ollama_models:
         step_no += 1
         _announce(on_output, on_status, step_no, total, "Waiting for Ollama server")
         if not _wait_for_ollama(compose, out_dir, on_output=on_output):
+            _record_run(out_dir, "deploy", steps, on_output)
             return DeployResult(
                 success=False,
                 steps=steps,
@@ -262,6 +343,7 @@ def deploy(
         step = _run(pull_cmd, out_dir, timeout=300, max_timeout=7200, on_output=on_output)
         steps.append(step)
         if not step.ok:
+            _record_run(out_dir, "deploy", steps, on_output)
             return DeployResult(
                 success=False,
                 steps=steps,
@@ -278,7 +360,7 @@ def deploy(
             on_status("Waiting for public tunnel URL...")
         if on_output:
             on_output("[dim]  waiting for Cloudflare tunnel...[/dim]")
-        tunnel_url = _wait_for_tunnel_url()
+        tunnel_url = _wait_for_tunnel_url(on_output=on_output)
         if tunnel_url:
             access_urls = enrich_access_urls(config, access_urls, tunnel_url=tunnel_url)
             if on_output:
@@ -301,6 +383,7 @@ def deploy(
         for line in format_access_lines(access_urls):
             on_output(line)
 
+    _record_run(out_dir, "deploy", steps, on_output)
     return DeployResult(success=True, steps=steps, access_urls=access_urls)
 
 
@@ -339,6 +422,7 @@ def stop_stack(
     step = _run(down_cmd, out_dir, timeout=120, on_output=on_output)
     steps.append(step)
     if not step.ok:
+        _record_run(out_dir, "stop", steps, on_output)
         return DeployResult(
             success=False,
             steps=steps,
@@ -351,6 +435,7 @@ def stop_stack(
         on_output("")
         on_output("[bold green]✓ Stack stopped[/bold green]")
 
+    _record_run(out_dir, "stop", steps, on_output)
     return DeployResult(success=True, steps=steps)
 
 
@@ -375,7 +460,8 @@ def run_curl_tests(
     for i, cmd in enumerate(urls.test_commands, start=1):
         if on_output:
             on_output("")
-            on_output(f"[bold #c9a227][{i}/{len(urls.test_commands)}][/bold #c9a227] {cmd}")
+            on_output(f"[bold #c9a227][{i}/{len(urls.test_commands)}][/bold #c9a227] curl test")
+            on_output(f"[dim]$ {cmd}[/dim]")
         try:
             result = subprocess.run(
                 shlex.split(cmd),
@@ -390,6 +476,8 @@ def run_curl_tests(
             steps.append(step)
             if on_output:
                 on_output("[red]✗ timed out[/red]")
+            out_dir = Path(config.output_dir).resolve()
+            _record_run(out_dir, "curl-test", steps, on_output)
             return DeployResult(success=False, steps=steps, error=f"curl timed out: {cmd}")
 
         step = DeployStep(
@@ -410,6 +498,8 @@ def run_curl_tests(
                 on_output(f"[red]✗ exit {result.returncode}[/red]")
                 if preview:
                     on_output(f"  [red]{preview}[/red]")
+                out_dir = Path(config.output_dir).resolve()
+                _record_run(out_dir, "curl-test", steps, on_output)
                 return DeployResult(
                     success=False,
                     steps=steps,
@@ -423,4 +513,6 @@ def run_curl_tests(
         on_output("")
         on_output("[bold green]✓ All curl tests passed[/bold green]")
 
+    out_dir = Path(config.output_dir).resolve()
+    _record_run(out_dir, "curl-test", steps, on_output)
     return DeployResult(success=True, steps=steps, access_urls=urls)

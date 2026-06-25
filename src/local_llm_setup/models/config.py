@@ -16,6 +16,18 @@ class Framework(str, Enum):
     SGLANG = "sglang"
 
 
+FRAMEWORK_DEFAULT_PORTS: dict[Framework, int] = {
+    Framework.OLLAMA: 11434,
+    Framework.VLLM: 8000,
+    Framework.LLAMACPP: 8080,
+    Framework.SGLANG: 30000,
+}
+
+
+def framework_default_port(framework: Framework) -> int:
+    return FRAMEWORK_DEFAULT_PORTS[framework]
+
+
 class ConfigMode(str, Enum):
     QUICK = "quick"
     FULL = "full"
@@ -81,6 +93,20 @@ class Capabilities(BaseModel):
     mtp_drafter_model: str | None = None
 
 
+class VllmServeOptions(BaseModel):
+    """vLLM ``serve`` flags — maps to production setups (e.g. Gemma 4 multimodal)."""
+
+    gpu_memory_utilization: float | None = None
+    max_num_seqs: int | None = None
+    trust_remote_code: bool = False
+    enable_prefix_caching: bool = False
+    tool_call_parser: str | None = None
+    reasoning_parser: str | None = None
+    kv_cache_dtype: str | None = None
+    limit_mm_per_prompt: str | None = None
+    install_audio_extras: bool = False
+
+
 class ModelConfig(BaseModel):
     """Model name: Ollama tag, HF repo id, or GGUF path/url."""
 
@@ -104,23 +130,23 @@ class FrameworkConfig(BaseModel):
     model: ModelConfig
     capabilities: Capabilities = Field(default_factory=Capabilities)
     port: int = 8000
+    publish_port: int | None = None
     bind_host: str = "127.0.0.1"
     image_tag: str | None = None
     extra_env: dict[str, str] = Field(default_factory=dict)
     extra_args: list[str] = Field(default_factory=list)
     gpu_count: int = 1
+    gpu_device_ids: list[str] = Field(default_factory=list)
     shm_size: str = "16gb"
+    ipc: str | None = None
+    extra_volumes: list[str] = Field(default_factory=list)
+    command_shell: str | None = None
+    vllm: VllmServeOptions | None = None
 
     @model_validator(mode="after")
     def default_port(self) -> FrameworkConfig:
-        defaults = {
-            Framework.OLLAMA: 11434,
-            Framework.VLLM: 8000,
-            Framework.LLAMACPP: 8080,
-            Framework.SGLANG: 30000,
-        }
         if self.port == 8000 and self.framework != Framework.VLLM:
-            self.port = defaults.get(self.framework, self.port)
+            self.port = FRAMEWORK_DEFAULT_PORTS.get(self.framework, self.port)
         return self
 
 
@@ -168,3 +194,4 @@ class GeneratedOutput(BaseModel):
     api_keys_map: str | None = None
     run_commands: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    config: SetupConfig | None = None

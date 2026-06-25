@@ -25,6 +25,7 @@ class AccessUrls:
     tunnel_url: str | None = None
     tunnel_openai_base_url: str | None = None
     tunnel_test_commands: list[str] = field(default_factory=list)
+    service_urls: list[tuple[str, str]] = field(default_factory=list)
 
 
 def get_lan_ip() -> str | None:
@@ -132,25 +133,30 @@ def build_access_urls(config: SetupConfig) -> AccessUrls:
         lan_urls = [_url(lan_ip, ngx.listen_port)] if lan_ip else []
         primary = lan_urls[0] if lan_urls else local_url
         health = _url("127.0.0.1", ngx.listen_port, "/health")
-        direct_local = _url("127.0.0.1", fc.port)
-        direct_lan = [_url(lan_ip, fc.port)] if lan_ip and fc.bind_host == "0.0.0.0" else []
         base = primary.rstrip("/")
         ollama_base = base if fc.framework == Framework.OLLAMA else None
         openai_base = f"{base}/v1" if fc.framework == Framework.OLLAMA else base
         test_host = lan_ip or "127.0.0.1"
         test_port = ngx.listen_port
+        service_urls = [
+            (item.framework.value, _url("127.0.0.1", ngx.listen_port, f"/{item.framework.value}/"))
+            if len(config.frameworks) > 1
+            else (item.framework.value, _url("127.0.0.1", ngx.listen_port))
+            for item in config.frameworks
+        ]
         return AccessUrls(
             primary_url=primary,
             local_url=local_url,
             lan_urls=lan_urls,
-            direct_local_url=direct_local,
-            direct_lan_urls=direct_lan,
+            direct_local_url=None,
+            direct_lan_urls=[],
             health_url=health,
             ollama_base_url=ollama_base,
             openai_base_url=openai_base,
             api_hint=_api_hint(fc.framework),
             external=True,
             test_commands=build_curl_test_commands(config, host=test_host, port=test_port),
+            service_urls=service_urls,
         )
 
     local_url = _url("127.0.0.1", fc.port)
@@ -161,6 +167,10 @@ def build_access_urls(config: SetupConfig) -> AccessUrls:
     ollama_base = base if fc.framework == Framework.OLLAMA else None
     openai_base = f"{base}/v1" if fc.framework in (Framework.OLLAMA, Framework.VLLM, Framework.SGLANG) else base
     test_host = "127.0.0.1"
+    service_urls = [
+        (item.framework.value, _url("127.0.0.1", item.port))
+        for item in config.frameworks
+    ]
     return AccessUrls(
         primary_url=primary,
         local_url=local_url,
@@ -173,6 +183,7 @@ def build_access_urls(config: SetupConfig) -> AccessUrls:
         api_hint=_api_hint(fc.framework),
         external=external,
         test_commands=build_curl_test_commands(config, host=test_host, port=fc.port),
+        service_urls=service_urls,
     )
 
 
@@ -208,6 +219,11 @@ def format_access_lines(urls: AccessUrls, *, markup: bool = True) -> list[str]:
     if urls.direct_local_url and urls.lan_urls:
         lines.append(f"  {dim}direct (bypass nginx): {urls.direct_local_url}{dim_end}")
 
+    if len(urls.service_urls) > 1:
+        lines.append(f"  {bold}services:{bold_end}")
+        for name, url in urls.service_urls:
+            lines.append(f"    {name}: {url}")
+
     lines.append(f"  {dim}{urls.api_hint}{dim_end}")
     if urls.test_commands:
         label = "test curl (LAN IP):" if urls.lan_urls else "test curl:"
@@ -242,6 +258,11 @@ def render_access_md(config: SetupConfig, urls: AccessUrls | None = None) -> str
         lines.append(f"- **OpenAI client base URL:** `{urls.openai_base_url}`")
     if urls.ollama_base_url:
         lines.append(f"- **Ollama base URL:** `{urls.ollama_base_url}`")
+
+    if len(urls.service_urls) > 1:
+        lines.extend(["", "## Services", ""])
+        for name, url in urls.service_urls:
+            lines.append(f"- **{name}:** {url}")
 
     lines.extend(["", "## API endpoints", "", "| Method | Path | คำอธิบาย |", "|--------|------|----------|"])
     if urls.health_url:

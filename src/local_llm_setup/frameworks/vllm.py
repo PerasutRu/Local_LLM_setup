@@ -27,7 +27,7 @@ class VllmPlugin(FrameworkPlugin):
         supports_hf=True,
         supports_ollama_registry=False,
         supports_vision=True,
-        supports_audio=False,
+        supports_audio=True,
         supports_tool_calling=True,
         supports_mtp=True,
         requires_gpu=True,

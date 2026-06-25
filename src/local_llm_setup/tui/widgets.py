@@ -146,3 +146,8 @@ class ChoiceList(Widget):
         if self.multi:
             return [item.choice_id for item in self._items if item.checked]
         return [self._items[self._index].choice_id] if self._items else []
+
+    def set_checked(self, choice_ids: set[str]) -> None:
+        for item in self._items:
+            item.checked = item.choice_id in choice_ids
+            item.refresh()
