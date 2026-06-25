@@ -4,9 +4,17 @@ from __future__ import annotations
 
 import json
 import socket
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
+from ipaddress import ip_address
 
 from local_llm_setup.models.config import Framework, SetupConfig
+
+_PUBLIC_IP_SERVICES = (
+    "https://api.ipify.org",
+    "https://ifconfig.me/ip",
+)
 
 
 @dataclass
@@ -26,6 +34,8 @@ class AccessUrls:
     tunnel_openai_base_url: str | None = None
     tunnel_test_commands: list[str] = field(default_factory=list)
     service_urls: list[tuple[str, str]] = field(default_factory=list)
+    uses_public_ip: bool = False
+    private_lan_url: str | None = None
 
 
 def get_lan_ip() -> str | None:
@@ -36,6 +46,36 @@ def get_lan_ip() -> str | None:
             return s.getsockname()[0]
     except OSError:
         return None
+
+
+def _is_public_ipv4(host: str) -> bool:
+    try:
+        addr = ip_address(host)
+    except ValueError:
+        return False
+    return addr.version == 4 and addr.is_global
+
+
+def get_public_ip(*, timeout: float = 3.0) -> str | None:
+    """Best-effort public IPv4 via outbound HTTPS (needs internet)."""
+    for service in _PUBLIC_IP_SERVICES:
+        try:
+            with urllib.request.urlopen(service, timeout=timeout) as resp:
+                host = resp.read().decode().strip()
+        except (OSError, urllib.error.URLError, TimeoutError):
+            continue
+        if _is_public_ipv4(host):
+            return host
+    return None
+
+
+def _external_hosts() -> tuple[str | None, str | None, bool]:
+    """Return (preferred_host, private_lan_ip, uses_public_ip)."""
+    lan_ip = get_lan_ip()
+    public_ip = get_public_ip()
+    if public_ip:
+        return public_ip, lan_ip, True
+    return lan_ip, lan_ip, False
 
 
 def _api_hint(framework: Framework) -> str:
@@ -105,10 +145,10 @@ def enrich_access_urls(
     updates: dict = {}
 
     if ngx.enabled:
-        lan_ip = get_lan_ip()
-        if lan_ip:
+        external_host, lan_ip, uses_public_ip = _external_hosts()
+        if external_host:
             updates["test_commands"] = build_curl_test_commands(
-                config, host=lan_ip, port=ngx.listen_port
+                config, host=external_host, port=ngx.listen_port
             )
 
     if tunnel_url:
@@ -125,18 +165,23 @@ def enrich_access_urls(
 
 def build_access_urls(config: SetupConfig) -> AccessUrls:
     fc = config.frameworks[0]
-    lan_ip = get_lan_ip()
+    external_host, lan_ip, uses_public_ip = _external_hosts()
     ngx = config.nginx
 
     if ngx.enabled:
         local_url = _url("127.0.0.1", ngx.listen_port)
-        lan_urls = [_url(lan_ip, ngx.listen_port)] if lan_ip else []
-        primary = lan_urls[0] if lan_urls else local_url
+        external_urls = [_url(external_host, ngx.listen_port)] if external_host else []
+        private_lan_url = (
+            _url(lan_ip, ngx.listen_port)
+            if lan_ip and uses_public_ip and lan_ip != external_host
+            else None
+        )
+        primary = external_urls[0] if external_urls else local_url
         health = _url("127.0.0.1", ngx.listen_port, "/health")
         base = primary.rstrip("/")
         ollama_base = base if fc.framework == Framework.OLLAMA else None
         openai_base = f"{base}/v1" if fc.framework == Framework.OLLAMA else base
-        test_host = lan_ip or "127.0.0.1"
+        test_host = external_host or "127.0.0.1"
         test_port = ngx.listen_port
         service_urls = [
             (item.framework.value, _url("127.0.0.1", ngx.listen_port, f"/{item.framework.value}/"))
@@ -147,7 +192,7 @@ def build_access_urls(config: SetupConfig) -> AccessUrls:
         return AccessUrls(
             primary_url=primary,
             local_url=local_url,
-            lan_urls=lan_urls,
+            lan_urls=external_urls,
             direct_local_url=None,
             direct_lan_urls=[],
             health_url=health,
@@ -157,16 +202,23 @@ def build_access_urls(config: SetupConfig) -> AccessUrls:
             external=True,
             test_commands=build_curl_test_commands(config, host=test_host, port=test_port),
             service_urls=service_urls,
+            uses_public_ip=uses_public_ip,
+            private_lan_url=private_lan_url,
         )
 
     local_url = _url("127.0.0.1", fc.port)
     external = fc.bind_host == "0.0.0.0"
-    lan_urls = [_url(lan_ip, fc.port)] if lan_ip and external else []
-    primary = lan_urls[0] if lan_urls else local_url
+    external_urls = [_url(external_host, fc.port)] if external_host and external else []
+    private_lan_url = (
+        _url(lan_ip, fc.port)
+        if lan_ip and uses_public_ip and external and lan_ip != external_host
+        else None
+    )
+    primary = external_urls[0] if external_urls else local_url
     base = primary.rstrip("/")
     ollama_base = base if fc.framework == Framework.OLLAMA else None
     openai_base = f"{base}/v1" if fc.framework in (Framework.OLLAMA, Framework.VLLM, Framework.SGLANG) else base
-    test_host = "127.0.0.1"
+    test_host = external_host if external and external_host else "127.0.0.1"
     service_urls = [
         (item.framework.value, _url("127.0.0.1", item.port))
         for item in config.frameworks
@@ -174,7 +226,7 @@ def build_access_urls(config: SetupConfig) -> AccessUrls:
     return AccessUrls(
         primary_url=primary,
         local_url=local_url,
-        lan_urls=lan_urls,
+        lan_urls=external_urls,
         direct_local_url=None,
         direct_lan_urls=[],
         health_url=None,
@@ -184,6 +236,8 @@ def build_access_urls(config: SetupConfig) -> AccessUrls:
         external=external,
         test_commands=build_curl_test_commands(config, host=test_host, port=fc.port),
         service_urls=service_urls,
+        uses_public_ip=uses_public_ip and external,
+        private_lan_url=private_lan_url,
     )
 
 
@@ -196,12 +250,16 @@ def format_access_lines(urls: AccessUrls, *, markup: bool = True) -> list[str]:
     lines = ["", f"{bold}Access URLs{bold_end}"]
     lines.append(f"  local:   {urls.local_url}")
     if urls.lan_urls:
-        for lan in urls.lan_urls:
-            lines.append(f"  LAN:     {lan}")
+        network_label = "public IP" if urls.uses_public_ip else "LAN"
+        for external in urls.lan_urls:
+            lines.append(f"  {network_label}:  {external}")
     elif urls.external:
-        lines.append(f"  {dim}LAN: unavailable (could not detect IP){dim_end}")
+        lines.append(f"  {dim}public IP: unavailable (could not detect IP){dim_end}")
     elif not urls.external:
         lines.append(f"  {dim}LAN: not exposed (bind 127.0.0.1 only){dim_end}")
+
+    if urls.private_lan_url:
+        lines.append(f"  LAN:     {urls.private_lan_url}  [dim](WiFi เดียวกัน)[/dim]")
 
     if urls.tunnel_url:
         lines.append(f"  {bold}public:{bold_end}  {urls.tunnel_url}  [dim](เข้าจากอินเทอร์เน็ต นอก LAN)[/dim]")
@@ -226,7 +284,12 @@ def format_access_lines(urls: AccessUrls, *, markup: bool = True) -> list[str]:
 
     lines.append(f"  {dim}{urls.api_hint}{dim_end}")
     if urls.test_commands:
-        label = "test curl (LAN IP):" if urls.lan_urls else "test curl:"
+        if urls.uses_public_ip:
+            label = "test curl (public IP):"
+        elif urls.lan_urls:
+            label = "test curl (LAN IP):"
+        else:
+            label = "test curl:"
         lines.append(f"  {dim}{label}{dim_end}")
         for cmd in urls.test_commands:
             lines.append(f"    {dim}{cmd}{dim_end}")
@@ -235,10 +298,17 @@ def format_access_lines(urls: AccessUrls, *, markup: bool = True) -> list[str]:
         for cmd in urls.tunnel_test_commands:
             lines.append(f"    {dim}{cmd}{dim_end}")
     if urls.external and urls.lan_urls:
-        lines.append(
-            f"  {dim}LAN: same WiFi only · ถ้าเข้าไม่ได้ เปิด macOS Firewall ให้ Docker "
-            f"· ใช้ public URL สำหรับนอก LAN{dim_end}"
-        )
+        if urls.uses_public_ip:
+            lines.append(
+                f"  {dim}public IP: ต้องเปิด firewall ให้ port นี้ · "
+                f"ถ้า server อยู่หลัง router ต้องตั้ง port forward · "
+                f"หรือใช้ Cloudflare tunnel URL ด้านบน{dim_end}"
+            )
+        else:
+            lines.append(
+                f"  {dim}LAN: same WiFi only · ถ้าเข้าไม่ได้ เปิด firewall ให้ Docker "
+                f"· ใช้ Cloudflare tunnel URL สำหรับนอก LAN{dim_end}"
+            )
     return lines
 
 
@@ -247,8 +317,13 @@ def render_access_md(config: SetupConfig, urls: AccessUrls | None = None) -> str
     fc = config.frameworks[0]
     lines = ["# Access URLs", ""]
     lines.append(f"- **Local:** {urls.local_url}")
-    for lan in urls.lan_urls:
-        lines.append(f"- **LAN (same WiFi):** {lan}")
+    for external in urls.lan_urls:
+        if urls.uses_public_ip:
+            lines.append(f"- **Public IP:** {external}")
+        else:
+            lines.append(f"- **LAN (same WiFi):** {external}")
+    if urls.private_lan_url:
+        lines.append(f"- **LAN (same WiFi):** {urls.private_lan_url}")
     if urls.tunnel_url:
         lines.append(f"- **Public (outside LAN):** {urls.tunnel_url}")
         lines.append(f"- **Public OpenAI base URL:** `{urls.tunnel_openai_base_url}`")
@@ -282,7 +357,12 @@ def render_access_md(config: SetupConfig, urls: AccessUrls | None = None) -> str
     )
 
     if urls.test_commands:
-        label = "LAN IP" if urls.lan_urls else "host"
+        if urls.uses_public_ip:
+            label = "public IP"
+        elif urls.lan_urls:
+            label = "LAN IP"
+        else:
+            label = "host"
         lines.extend(
             [
                 "",
@@ -312,7 +392,14 @@ def render_access_md(config: SetupConfig, urls: AccessUrls | None = None) -> str
             "The LAN URL only works on the same local network."
         )
     elif urls.external and urls.lan_urls:
-        lines.append("Devices on the same network can access the **LAN** URL.")
+        if urls.uses_public_ip:
+            lines.append(
+                "Use the **Public IP** URL when the host port is reachable from the internet "
+                "(firewall open, port forwarded if behind NAT). "
+                "Otherwise use the **Cloudflare** URL."
+            )
+        else:
+            lines.append("Devices on the same network can access the **LAN** URL.")
     elif not urls.external:
         lines.append("Service is bound to localhost only. Enable nginx or public bind for LAN access.")
     return "\n".join(lines) + "\n"

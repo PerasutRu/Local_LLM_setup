@@ -11,7 +11,7 @@ TUI wizard for hosting local LLMs with **Ollama**, **vLLM**, **llama.cpp**, and 
 - Capability flags: vision, audio, tool calling, speculative decoding (MTP)
 - Optional nginx reverse proxy with API key auth and Cloudflare quick tunnel
 - Generate & deploy from TUI or CLI (`generate --run`, `run`, `stop`)
-- Access URLs for localhost, LAN, and tunnel — plus curl smoke tests
+- Access URLs for localhost, **public IP** (auto-detected), private LAN, and Cloudflare tunnel — plus curl smoke tests
 - Save/load YAML profiles
 - One-line server install and uninstall via `curl | bash` ([Hermes-style](https://hermes-agent.nousresearch.com/))
 
@@ -109,7 +109,44 @@ local-llm-setup stop
 | `stop` | Stop the stack (`--volumes` to remove data volumes) |
 | `save` | Save a config as a named profile |
 
-After `generate` or `run`, the CLI prints **access URLs** (localhost, LAN IP, and Cloudflare tunnel when nginx is enabled).
+After `generate` or `run`, the CLI prints **access URLs** (localhost, public IP when detectable, private LAN, and Cloudflare tunnel when nginx is enabled). See [Access URLs](#access-urls) below.
+
+## Access URLs
+
+After deploy, the TUI and `ACCESS.md` show several endpoints — each is for a different network:
+
+| Label | Example | Use when |
+|-------|---------|----------|
+| **local** | `http://127.0.0.1:8080/` | On the host machine only |
+| **public IP** | `http://203.0.113.10:8080/` | From the internet, if the host port is open in firewall and port-forwarded (when behind NAT) |
+| **LAN** | `http://192.168.1.191:8080/` | Other devices on the same WiFi/LAN (shown alongside public IP when both are known) |
+| **public** (tunnel) | `https://….trycloudflare.com` | From anywhere on the internet — no firewall/port-forward setup; URL changes when the tunnel container restarts |
+| **openai** / **ollama** | Same host as public IP or LAN above | Base URL for API clients (`/v1` is appended for OpenAI-compatible clients) |
+
+**Public IP detection** — on deploy, the tool queries `api.ipify.org` / `ifconfig.me` over HTTPS. If that fails (offline host), it falls back to the private LAN address.
+
+**With nginx enabled**, only nginx publishes a host port (e.g. `8080` or `8081` if the default was busy). Ollama/vLLM containers stay on the internal Docker network (`11434/tcp` in `docker ps` with no `0.0.0.0:…` mapping is expected). Traffic flows:
+
+```
+Client → host:8080 (nginx) → ollama:11434 (internal)
+Client → https://….trycloudflare.com (cloudflared) → nginx → ollama
+```
+
+**`/test` slash command** — curl smoke tests always hit `127.0.0.1` on the port published in `output/docker-compose.yaml` (not stale wizard state).
+
+Example checks from another machine:
+
+```bash
+# Same LAN
+curl http://192.168.1.191:8080/health
+
+# Internet via public IP (firewall + port forward required)
+curl http://YOUR_PUBLIC_IP:8080/health
+
+# Internet via Cloudflare quick tunnel (no port forward)
+curl https://YOUR_TUNNEL.trycloudflare.com/health
+docker logs local-llm-tunnel 2>&1 | grep trycloudflare   # current tunnel URL
+```
 
 ## TUI slash commands
 
@@ -220,7 +257,7 @@ docker compose down          # stop
 docker compose down -v       # stop + remove volumes
 ```
 
-When **nginx is enabled**, only nginx (and optional cloudflared) publish host ports. LLM containers stay on the internal network; nginx proxies to `service_name:port` inside the stack.
+When **nginx is enabled**, only nginx (and optional cloudflared) publish host ports. LLM containers stay on the internal network; nginx proxies to `service_name:port` inside the stack. In `docker ps`, expect `11434/tcp` without a host mapping for Ollama — use the nginx port or tunnel URL instead.
 
 When **nginx is disabled**, each framework publishes its own host port (e.g. `127.0.0.1:11434`).
 
@@ -253,7 +290,11 @@ When nginx is enabled, the framework binds to `127.0.0.1` internally and only ng
 
 **vLLM/SGLang validation errors on Mac** — Use Ollama or llama.cpp on Apple Silicon.
 
-**Port already in use** — Ports are auto-adjusted to the next free port during `generate` (a warning is printed). When running **multiple frameworks** (Ollama + vLLM + …), each service gets its default port (`11434`, `8000`, `8080`, `30000`) or the next free one if that port is taken.
+**Port already in use** — Ports are auto-adjusted to the next free port during `generate` (a warning is printed). When running **multiple frameworks** (Ollama + vLLM + …), each service gets its default port (`11434`, `8000`, `8080`, `30000`) or the next free one if that port is taken. `/test` and `ACCESS.md` read the actual port from `docker-compose.yaml`.
+
+**Cannot reach the API from outside** — Use the **Cloudflare tunnel** URL (`https://….trycloudflare.com`) or ensure the **public IP** port is allowed in the host firewall and forwarded on the router. Do not use `192.168.x.x` from outside your LAN. The `openai` / `ollama` lines in the TUI follow public IP (or LAN if public IP could not be detected).
+
+**Stale tunnel URL** — Cloudflare quick-tunnel URLs change every time `local-llm-tunnel` restarts. Run `docker logs local-llm-tunnel 2>&1 | grep trycloudflare` or redeploy to refresh `ACCESS.md`.
 
 **Gated Hugging Face models** — Set `HF_TOKEN` in the wizard or `.env`.
 

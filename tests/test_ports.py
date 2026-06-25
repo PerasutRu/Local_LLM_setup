@@ -11,7 +11,7 @@ from local_llm_setup.models.config import (
     NginxConfig,
     SetupConfig,
 )
-from local_llm_setup.ports import find_free_port, resolve_port_conflicts
+from local_llm_setup.ports import find_free_port, resolve_port_conflicts, parse_published_port, apply_compose_ports
 from local_llm_setup.renderers import prepare_config
 
 
@@ -154,3 +154,19 @@ def test_multi_framework_llamacpp_and_nginx_share_default_8080():
     assert resolved.frameworks[0].port == 8080
     assert resolved.nginx.listen_port == 8081
     assert any("nginx" in w.lower() for w in warnings)
+
+
+def test_parse_published_port():
+    assert parse_published_port("0.0.0.0:8080:80") == 8080
+    assert parse_published_port("8080:80") == 8080
+    assert parse_published_port("bad") is None
+
+
+def test_apply_compose_ports_reads_nginx(tmp_path):
+    (tmp_path / "docker-compose.yaml").write_text(
+        "services:\n  nginx:\n    ports:\n    - 0.0.0.0:8080:80\n",
+        encoding="utf-8",
+    )
+    config = _ollama_config(nginx_port=80)
+    synced = apply_compose_ports(config, tmp_path)
+    assert synced.nginx.listen_port == 8080

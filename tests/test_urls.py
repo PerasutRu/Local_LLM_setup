@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 from local_llm_setup.models.config import (
     Framework,
     FrameworkConfig,
@@ -10,7 +12,13 @@ from local_llm_setup.models.config import (
     SetupConfig,
 )
 from local_llm_setup.renderers import normalize_access
-from local_llm_setup.urls import build_access_urls, build_curl_test_commands, enrich_access_urls, format_access_lines, render_access_md
+from local_llm_setup.urls import (
+    build_access_urls,
+    build_curl_test_commands,
+    enrich_access_urls,
+    format_access_lines,
+    render_access_md,
+)
 
 
 def test_nginx_urls_external():
@@ -25,11 +33,44 @@ def test_nginx_urls_external():
         ],
         nginx=NginxConfig(enabled=True, listen_port=8080, bind_host="0.0.0.0"),
     )
-    urls = build_access_urls(config)
+    with patch("local_llm_setup.urls.get_public_ip", return_value=None), patch(
+        "local_llm_setup.urls.get_lan_ip", return_value="192.168.1.10"
+    ):
+        urls = build_access_urls(config)
     assert urls.local_url == "http://127.0.0.1:8080/"
+    assert urls.lan_urls == ["http://192.168.1.10:8080/"]
+    assert urls.openai_base_url == "http://192.168.1.10:8080/v1"
     assert urls.external is True
     assert urls.health_url == "http://127.0.0.1:8080/health"
     assert "Ollama" in urls.api_hint
+    assert urls.uses_public_ip is False
+
+
+def test_nginx_urls_use_public_ip_when_available():
+    config = SetupConfig(
+        frameworks=[
+            FrameworkConfig(
+                framework=Framework.OLLAMA,
+                model=ModelConfig(name="llama3.2"),
+                port=11434,
+                bind_host="127.0.0.1",
+            )
+        ],
+        nginx=NginxConfig(enabled=True, listen_port=8081, bind_host="0.0.0.0"),
+    )
+    with patch("local_llm_setup.urls.get_public_ip", return_value="8.8.8.8"), patch(
+        "local_llm_setup.urls.get_lan_ip", return_value="192.168.1.191"
+    ):
+        urls = build_access_urls(config)
+
+    assert urls.lan_urls == ["http://8.8.8.8:8081/"]
+    assert urls.openai_base_url == "http://8.8.8.8:8081/v1"
+    assert urls.ollama_base_url == "http://8.8.8.8:8081"
+    assert urls.private_lan_url == "http://192.168.1.191:8081/"
+    assert urls.uses_public_ip is True
+    lines = format_access_lines(urls, markup=False)
+    assert any("public IP:" in line for line in lines)
+    assert any("LAN:" in line for line in lines)
 
 
 def test_direct_local_only():
@@ -43,7 +84,10 @@ def test_direct_local_only():
             )
         ],
     )
-    urls = build_access_urls(config)
+    with patch("local_llm_setup.urls.get_public_ip", return_value=None), patch(
+        "local_llm_setup.urls.get_lan_ip", return_value="192.168.1.10"
+    ):
+        urls = build_access_urls(config)
     assert urls.local_url == "http://127.0.0.1:11434/"
     assert urls.external is False
     assert urls.lan_urls == []
@@ -77,7 +121,10 @@ def test_format_access_lines():
             )
         ],
     )
-    lines = format_access_lines(build_access_urls(config), markup=False)
+    with patch("local_llm_setup.urls.get_public_ip", return_value=None), patch(
+        "local_llm_setup.urls.get_lan_ip", return_value="192.168.1.10"
+    ):
+        lines = format_access_lines(build_access_urls(config), markup=False)
     assert any("local:" in line for line in lines)
 
 
@@ -96,7 +143,10 @@ def test_curl_test_commands_include_chat():
     assert any("/health" in c for c in cmds)
     assert any("/api/chat" in c for c in cmds)
     assert any("/v1/chat/completions" in c for c in cmds)
-    md = render_access_md(config)
+    with patch("local_llm_setup.urls.get_public_ip", return_value=None), patch(
+        "local_llm_setup.urls.get_lan_ip", return_value="192.168.1.10"
+    ):
+        md = render_access_md(config)
     assert "## Test curl" in md
     assert "tinyllama:1.1b" in md
 
@@ -112,7 +162,10 @@ def test_enrich_access_urls_with_tunnel():
         ],
         nginx=NginxConfig(enabled=True, listen_port=8080, tunnel_enabled=True),
     )
-    base = build_access_urls(config)
+    with patch("local_llm_setup.urls.get_public_ip", return_value="8.8.8.8"), patch(
+        "local_llm_setup.urls.get_lan_ip", return_value="192.168.1.191"
+    ):
+        base = build_access_urls(config)
     enriched = enrich_access_urls(
         config,
         base,
@@ -121,3 +174,13 @@ def test_enrich_access_urls_with_tunnel():
     assert enriched.tunnel_url == "https://example.trycloudflare.com"
     assert enriched.tunnel_openai_base_url == "https://example.trycloudflare.com/v1"
     assert any("trycloudflare.com" in c for c in enriched.tunnel_test_commands)
+    assert any("8.8.8.8" in c for c in enriched.test_commands)
+
+
+def test_is_public_ipv4_helper():
+    from local_llm_setup.urls import _is_public_ipv4
+
+    assert _is_public_ipv4("8.8.8.8") is True
+    assert _is_public_ipv4("192.168.1.1") is False
+    assert _is_public_ipv4("10.0.0.1") is False
+    assert _is_public_ipv4("not-an-ip") is False

@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import yaml
+
 from local_llm_setup.detect.host import is_port_free
 from local_llm_setup.models.config import Framework, SetupConfig, framework_default_port
 
@@ -102,3 +106,67 @@ def resolve_port_conflicts(config: SetupConfig) -> tuple[SetupConfig, list[str]]
             config.nginx.upstream_port = config.frameworks[0].port
 
     return config, warnings
+
+
+def parse_published_port(mapping: str) -> int | None:
+    """Extract the host port from a Docker Compose port mapping string."""
+    parts = str(mapping).strip().split(":")
+    if len(parts) == 3:
+        try:
+            return int(parts[1])
+        except ValueError:
+            return None
+    if len(parts) == 2:
+        try:
+            return int(parts[0])
+        except ValueError:
+            return None
+    return None
+
+
+def apply_compose_ports(config: SetupConfig, output_dir: Path | str) -> SetupConfig:
+    """Sync listen/publish ports from the generated docker-compose.yaml.
+
+    Wizard state can drift after ``prepare_config`` (e.g. port 80 was busy at
+    deploy but free later). The compose file is the source of truth for what
+    is actually published on the host.
+    """
+    compose_path = Path(output_dir) / "docker-compose.yaml"
+    if not compose_path.is_file():
+        return config
+
+    try:
+        data = yaml.safe_load(compose_path.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        return config
+
+    services: dict = data.get("services") or {}
+    by_service = {fc.framework.value.replace(".", ""): fc for fc in config.frameworks}
+
+    if config.nginx.enabled:
+        nginx = services.get("nginx") or {}
+        ports = nginx.get("ports") or []
+        if ports:
+            host_port = parse_published_port(str(ports[0]))
+            if host_port is not None:
+                config.nginx.listen_port = host_port
+        if config.frameworks:
+            config.nginx.upstream_port = config.frameworks[0].port
+        return config
+
+    for name, service in services.items():
+        if name in {"nginx", "cloudflared"}:
+            continue
+        fc = by_service.get(name)
+        if fc is None:
+            continue
+        ports = service.get("ports") or []
+        if not ports:
+            continue
+        host_port = parse_published_port(str(ports[0]))
+        if host_port is not None:
+            fc.port = host_port
+            if fc.publish_port is None:
+                fc.publish_port = host_port
+
+    return config

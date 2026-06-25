@@ -11,8 +11,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from local_llm_setup.models.config import Framework, SetupConfig
+from local_llm_setup.ports import apply_compose_ports
 from local_llm_setup.renderers import normalize_access
-from local_llm_setup.urls import AccessUrls, build_access_urls, enrich_access_urls, format_access_lines
+from local_llm_setup.urls import (
+    AccessUrls,
+    build_access_urls,
+    build_curl_test_commands,
+    enrich_access_urls,
+    format_access_lines,
+)
 
 _TUNNEL_URL_RE = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
 
@@ -353,6 +360,7 @@ def deploy(
     if on_status:
         on_status("Deploy complete")
 
+    config = apply_compose_ports(config, out_dir)
     access_urls = build_access_urls(config)
     tunnel_url: str | None = None
     if config.nginx.enabled and config.nginx.tunnel_enabled:
@@ -439,6 +447,12 @@ def stop_stack(
     return DeployResult(success=True, steps=steps)
 
 
+def _runtime_test_commands(config: SetupConfig) -> list[str]:
+    """Build curl probes on localhost using ports already synced from compose."""
+    port = config.nginx.listen_port if config.nginx.enabled else config.frameworks[0].port
+    return build_curl_test_commands(config, host="127.0.0.1", port=port)
+
+
 def run_curl_tests(
     config: SetupConfig,
     *,
@@ -446,9 +460,11 @@ def run_curl_tests(
     on_status: Callable[[str], None] | None = None,
 ) -> DeployResult:
     """Run generated curl test commands against the running stack."""
-    config = normalize_access(config.model_copy(deep=True))
+    out_dir = Path(config.output_dir).resolve()
+    config = apply_compose_ports(normalize_access(config.model_copy(deep=True)), out_dir)
     urls = build_access_urls(config)
-    if not urls.test_commands:
+    test_commands = _runtime_test_commands(config)
+    if not test_commands:
         return DeployResult(success=False, error="No curl test commands available")
 
     if on_output:
@@ -457,10 +473,10 @@ def run_curl_tests(
         on_status("Running curl tests...")
 
     steps: list[DeployStep] = []
-    for i, cmd in enumerate(urls.test_commands, start=1):
+    for i, cmd in enumerate(test_commands, start=1):
         if on_output:
             on_output("")
-            on_output(f"[bold #c9a227][{i}/{len(urls.test_commands)}][/bold #c9a227] curl test")
+            on_output(f"[bold #c9a227][{i}/{len(test_commands)}][/bold #c9a227] curl test")
             on_output(f"[dim]$ {cmd}[/dim]")
         try:
             result = subprocess.run(
