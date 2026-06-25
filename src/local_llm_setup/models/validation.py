@@ -9,7 +9,7 @@ from local_llm_setup.models.config import Framework, ValidationIssue
 
 HF_REPO_RE = re.compile(r"^[\w\.\-]+/[\w\.\-]+$")
 GGUF_RE = re.compile(r"\.gguf$", re.IGNORECASE)
-OLLAMA_NAME_RE = re.compile(r"^[\w\.\-]+(:[\w\.\-]+)?$")
+OLLAMA_NAME_RE = re.compile(r"^[\w\.\-]+(/[\w\.\-]+)?(:[\w\.\-]+)?$")
 
 
 def validate_model_name(framework: Framework, name: str) -> list[ValidationIssue]:
@@ -21,7 +21,10 @@ def validate_model_name(framework: Framework, name: str) -> list[ValidationIssue
             issues.append(
                 ValidationIssue(
                     level="error",
-                    message=f"Invalid Ollama model name: {name!r}. Use format like 'llama3.2' or 'llama3.2:latest'.",
+                    message=(
+                        f"Invalid Ollama model name: {name!r}. "
+                        "Use format like 'llama3.2', 'llama3.2:latest', or 'namespace/model:tag'."
+                    ),
                     field="model.name",
                 )
             )

@@ -199,6 +199,13 @@ Generated files appear in `./output/`.
 | llama.cpp  | GGUF path/URL       | Yes  | No           |
 | SGLang     | Hugging Face repo   | No   | Yes          |
 
+**Ollama model names** — use the same format as `ollama pull`:
+
+- `llama3.2` or `llama3.2:latest` — official library models
+- `namespace/model:tag` — community models on Ollama Library (e.g. `dommage/gemma4-e4b-qat:latest`)
+
+The wizard validates names before generate/deploy; invalid examples include extra path segments like `org/sub/model:tag`.
+
 ## Docker Compose
 
 Generated stacks use a single Compose file in `output/docker-compose.yaml`. All services (LLM backends, nginx, cloudflared) join the **`local_llm`** bridge network (`local-llm-setup-local_llm`) so containers talk over Docker DNS (`ollama:11434`, `nginx:80`, etc.) instead of the host loopback.

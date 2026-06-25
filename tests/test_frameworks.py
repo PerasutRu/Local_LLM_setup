@@ -20,6 +20,16 @@ def test_ollama_model_validation_ok():
     assert not any(i.level == "error" for i in issues)
 
 
+def test_ollama_model_validation_namespace():
+    issues = validate_model_name(Framework.OLLAMA, "dommage/gemma4-e4b-qat:latest")
+    assert not any(i.level == "error" for i in issues)
+
+
+def test_ollama_model_validation_rejects_invalid():
+    issues = validate_model_name(Framework.OLLAMA, "bad/name/extra:tag")
+    assert any(i.level == "error" for i in issues)
+
+
 def test_vllm_rejects_gguf():
     issues = validate_model_name(Framework.VLLM, "user/model.gguf")
     assert any(i.level == "error" for i in issues)
