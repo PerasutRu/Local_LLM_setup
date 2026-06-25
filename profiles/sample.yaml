@@ -1,0 +1,30 @@
+profile_name: sample
+output_dir: ./output
+host: null
+frameworks:
+  - framework: ollama
+    mode: quick
+    model:
+      name: llama3.2
+      context_length: 8192
+      tensor_parallel: 1
+      hf_token_env: HF_TOKEN
+    capabilities:
+      text: true
+      vision: false
+      audio: false
+      tool_calling: true
+      mtp: false
+    port: 11434
+    bind_host: 127.0.0.1
+    image_tag: ollama/ollama:latest
+    gpu_count: 1
+    shm_size: 8gb
+nginx:
+  enabled: false
+  listen_port: 80
+  server_name: localhost
+  upstream_port: 11434
+  enable_cors: true
+  api_key_auth: false
+hf_token: null
