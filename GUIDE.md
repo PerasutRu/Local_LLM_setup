@@ -8,6 +8,68 @@
 
 ## 1. ติดตั้ง (ครั้งแรก)
 
+### ติดตั้งบน server ด้วยคำสั่งเดียว (แนะนำ)
+
+เลียนแบบ [Hermes Agent](https://hermes-agent.nousresearch.com/) — รันบน Linux/macOS:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/PerasutRu/Local_LLM_setup/main/install.sh | bash
+```
+
+สคริปต์จะ:
+
+1. ติดตั้ง `uv` และ Python 3.11 (ถ้ายังไม่มี)
+2. clone โปรเจกต์ไปที่ `~/.local-llm-setup/app`
+3. สร้าง venv และติดตั้งแพ็กเกจ `local-llm-setup`
+4. วางคำสั่ง `local-llm-setup` ใน `~/.local/bin`
+5. รัน `doctor` ตรวจ Docker/GPU (ข้ามได้ด้วย `--skip-doctor`)
+
+จากนั้นรัน wizard:
+
+```bash
+local-llm-setup tui
+```
+
+ถ้าต้องการ URL สั้นแบบ Hermes (`https://your-domain/install.sh`) ให้ host ไฟล์ `install.sh` บน GitHub Pages, nginx หรือ Cloudflare แล้วชี้โดเมนมาที่ไฟล์นั้น
+
+### ถอนการติดตั้ง (uninstall)
+
+หยุด stack ก่อน (ถ้ามี):
+
+```bash
+local-llm-setup stop
+# หรือลบ volumes ด้วย: local-llm-setup stop --volumes
+```
+
+จากนั้นรัน:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/PerasutRu/Local_LLM_setup/main/uninstall.sh | bash
+```
+
+สคริปต์จะลบ:
+
+| รายการ | path |
+|--------|------|
+| คำสั่ง CLI | `~/.local/bin/local-llm-setup` |
+| โค้ด + venv | `~/.local-llm-setup/app` |
+| output / profiles | `~/.local-llm-setup/output`, `profiles` |
+| uv ที่ติดตั้งมาพร้อมกัน | `~/.local-llm-setup/bin/uv` |
+
+ตัวเลือก:
+
+```bash
+# เก็บ output และ profiles ไว้
+curl -fsSL .../uninstall.sh | bash -s -- --keep-data --yes
+
+# เก็บ uv ไว้ (ใช้กับโปรเจกต์อื่นได้)
+curl -fsSL .../uninstall.sh | bash -s -- --keep-uv --yes
+```
+
+**ไม่ถูกลบอัตโนมัติ:** Docker images/volumes, บรรทัด PATH ใน `~/.bashrc` / `~/.zshrc` (ลบ comment block `# Local LLM Setup` เองถ้าต้องการ)
+
+### ติดตั้งจาก source (นักพัฒนา)
+
 ```bash
 cd /path/to/local_llm_setup
 

@@ -13,11 +13,66 @@ TUI wizard for hosting local LLMs with **Ollama**, **vLLM**, **llama.cpp**, and 
 - Generate & deploy from TUI or CLI (`generate --run`, `run`, `stop`)
 - Access URLs for localhost, LAN, and tunnel — plus curl smoke tests
 - Save/load YAML profiles
+- One-line server install and uninstall via `curl | bash` ([Hermes-style](https://hermes-agent.nousresearch.com/))
 
 ## Quick start
 
+### One-line install (server / fresh machine)
+
 ```bash
-# Install
+curl -fsSL https://raw.githubusercontent.com/PerasutRu/Local_LLM_setup/main/install.sh | bash
+local-llm-setup tui
+```
+
+The installer bootstraps **uv**, **Python 3.11**, clones the repo, creates a venv, and links `local-llm-setup` into `~/.local/bin`. Root installs on Linux use `/usr/local/lib/local-llm-setup` and `/usr/local/bin/local-llm-setup`.
+
+| Path | Purpose |
+|------|---------|
+| `~/.local-llm-setup/app` | Git checkout + virtualenv |
+| `~/.local-llm-setup/bin/uv` | Managed uv binary |
+| `~/.local-llm-setup/output` | Generated compose/nginx files |
+| `~/.local-llm-setup/profiles` | Saved YAML profiles |
+| `~/.local/bin/local-llm-setup` | CLI command shim |
+
+Install options (pass after `bash -s --`):
+
+| Option | Description |
+|--------|-------------|
+| `--dir PATH` | Install directory (default `~/.local-llm-setup/app`) |
+| `--branch NAME` | Git branch to clone (default `main`) |
+| `--no-venv` | Install into system Python instead of a venv |
+| `--skip-doctor` | Skip post-install `doctor` check |
+
+```bash
+curl -fsSL .../install.sh | bash -s -- --branch main --skip-doctor
+```
+
+**Custom install URL:** host `install.sh` on your domain (GitHub Pages, nginx, or Cloudflare) and point users at `https://your-domain/install.sh`.
+
+### Uninstall
+
+Stop any running stack first (`local-llm-setup stop` or `local-llm-setup stop --volumes`), then:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/PerasutRu/Local_LLM_setup/main/uninstall.sh | bash
+```
+
+| Option | Description |
+|--------|-------------|
+| `--keep-data` | Keep `output/` and `profiles/` under `~/.local-llm-setup` |
+| `--keep-uv` | Keep the managed uv binary |
+| `--yes`, `-y` | Skip confirmation prompt |
+
+```bash
+curl -fsSL .../uninstall.sh | bash -s -- --keep-data --yes
+```
+
+The uninstaller does **not** remove Docker images or volumes. Shell `PATH` lines added to `~/.bashrc` / `~/.zshrc` are left in place — remove the `# Local LLM Setup` block manually if needed.
+
+### Developer install
+
+```bash
+# Install from source
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 
