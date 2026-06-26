@@ -81,6 +81,20 @@ def test_compose_nginx_hides_framework_host_ports():
     assert "0.0.0.0:8080:80" in compose
 
 
+def test_compose_ollama_binds_http_for_docker_network():
+    compose = render_compose(_setup())
+    assert "OLLAMA_HOST" in compose
+    assert "0.0.0.0:11434" in compose
+
+
+def test_compose_ollama_host_respects_extra_env_override():
+    setup = _setup()
+    setup.frameworks[0].extra_env = {"OLLAMA_HOST": "0.0.0.0:9999"}
+    compose = render_compose(setup)
+    assert "0.0.0.0:9999" in compose
+    assert "0.0.0.0:11434" not in compose
+
+
 def test_compose_without_nginx_keeps_framework_ports():
     setup = SetupConfig(
         frameworks=[

@@ -214,7 +214,7 @@ Provider-specific extras:
 
 | Provider | Additional Full fields |
 |----------|------------------------|
-| **Ollama** | `OLLAMA_NUM_PARALLEL`, `OLLAMA_MODELS`, `OLLAMA_HOST` |
+| **Ollama** | `OLLAMA_NUM_PARALLEL`, `OLLAMA_MODELS`, `OLLAMA_HOST` (auto-set to `0.0.0.0:<port>` in compose; override in Full mode if needed) |
 | **vLLM** | See [vLLM production config](#vllm-production-config) below |
 | **llama.cpp** | `n_gpu_layers` (→ `--n-gpu-layers`) |
 | **SGLang** | `gpu_count`, same HF/quantization fields as vLLM |
@@ -288,6 +288,8 @@ docker compose down -v       # stop + remove volumes
 
 When **nginx is enabled**, only nginx (and optional cloudflared) publish host ports. LLM containers stay on the internal network; nginx proxies to `service_name:port` inside the stack. In `docker ps`, expect `11434/tcp` without a host mapping for Ollama — use the nginx port or tunnel URL instead.
 
+**Ollama + nginx:** generated compose sets `OLLAMA_HOST=0.0.0.0:<port>` so the Ollama HTTP API is reachable from nginx and other containers on `local_llm`. Without this, Ollama listens on `127.0.0.1` inside its container and nginx returns **502 Bad Gateway** on `/api/*` while `/health` still passes.
+
 When **nginx is disabled**, each framework publishes its own host port (e.g. `127.0.0.1:11434`).
 
 CLI shortcuts:
@@ -326,6 +328,8 @@ When nginx is enabled, the framework binds to `127.0.0.1` internally and only ng
 **Stale tunnel URL** — Cloudflare quick-tunnel URLs change every time `local-llm-tunnel` restarts. Run `docker logs local-llm-tunnel 2>&1 | grep trycloudflare` or redeploy to refresh `ACCESS.md`.
 
 **`401 Unauthorized` on `/api/*` or `/v1/*`** — nginx API key auth is enabled. Pass `X-API-Key` or `Authorization: Bearer` with the key from `output/api_keys.map`. OpenAI SDK users set `api_key=` to that value. Regenerate nginx with `/deploy` after upgrading if Bearer auth was added recently.
+
+**`502 Bad Gateway` on `/api/*` while `/health` is ok** — nginx is up but cannot reach the LLM backend. For Ollama, regenerate and redeploy so `docker-compose.yaml` includes `OLLAMA_HOST: 0.0.0.0:11434`. Confirm with `docker exec local-llm-nginx wget -qO- http://ollama:11434/api/tags` and check `docker logs local-llm-ollama` if the container is crashing (RAM/GPU).
 
 **Gated Hugging Face models** — Set `HF_TOKEN` in the wizard or `.env`.
 

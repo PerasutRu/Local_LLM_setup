@@ -18,6 +18,8 @@ def test_render_ollama_compose():
     assert "ollama" in text
     assert "11434" in text
     assert "ollama_data" in text
+    assert "OLLAMA_HOST" in text
+    assert "0.0.0.0:11434" in text
 
 
 def test_render_env_with_token():

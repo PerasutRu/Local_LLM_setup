@@ -181,7 +181,15 @@ def _build_service(fc: FrameworkConfig, config: SetupConfig) -> dict[str, Any]:
 
     if fc.framework == Framework.OLLAMA:
         service["volumes"] = ["ollama_data:/root/.ollama"]
-        service["healthcheck"]["test"] = ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+        # Ollama defaults to 127.0.0.1; bind all interfaces so nginx/other containers can reach it.
+        env.setdefault("OLLAMA_HOST", f"0.0.0.0:{fc.port}")
+        service["healthcheck"]["test"] = [
+            "CMD-SHELL",
+            (
+                f"curl -sf http://127.0.0.1:{fc.port}/api/tags >/dev/null 2>&1"
+                f" || ollama list >/dev/null 2>&1 || exit 1"
+            ),
+        ]
     elif fc.framework == Framework.LLAMACPP:
         service["volumes"] = ["./models:/models:ro"]
         service["command"] = _build_command(fc)
