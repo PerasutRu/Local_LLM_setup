@@ -46,7 +46,7 @@ packages = ["src/local_llm_setup"]
 [tool.hatch.build.targets.sdist]
 include = [
     "src/local_llm_setup",
-    "profiles/sample.yaml",
+    "llm_local/profiles/sample.yaml",
     "README.md",
 ]
 

@@ -20,7 +20,7 @@ def _ok(*_a, **_k):
 
 
 def test_deploy_success(tmp_path: Path):
-    setup = load_profile(Path("profiles/sample.yaml"))
+    setup = load_profile(Path("llm_local/profiles/sample.yaml"))
     setup.output_dir = tmp_path
     (tmp_path / "docker-compose.yaml").write_text("services: {}\n")
 
@@ -63,7 +63,7 @@ def test_wait_for_ollama_ready(tmp_path: Path):
 
 
 def test_deploy_ollama_pull_step(tmp_path: Path):
-    setup = load_profile(Path("profiles/sample.yaml"))
+    setup = load_profile(Path("llm_local/profiles/sample.yaml"))
     setup.output_dir = tmp_path
     (tmp_path / "docker-compose.yaml").write_text("services: {}\n")
     calls: list[str] = []

@@ -13,6 +13,7 @@ from rich.table import Table
 from local_llm_setup import __version__
 from local_llm_setup.detect import detect_host, run_doctor
 from local_llm_setup.models.config import SetupConfig
+from local_llm_setup.paths import OUTPUT_DIR
 from local_llm_setup.profiles import load_profile, save_profile
 from local_llm_setup.renderers import generate
 from local_llm_setup.runner import deploy, stop_stack
@@ -37,7 +38,7 @@ def main_version(
 
 @app.command()
 def tui(
-    output: Path = typer.Option(Path("./output"), "--output", "-o", help="Output directory"),
+    output: Path = typer.Option(OUTPUT_DIR, "--output", "-o", help="Output directory"),
     profile: Optional[Path] = typer.Option(None, "--profile", "-p", help="Load profile YAML"),
 ) -> None:
     """Launch interactive TUI wizard."""
@@ -94,7 +95,7 @@ def detect() -> None:
 @app.command("generate")
 def generate_cmd(
     config: Path = typer.Option(..., "--config", "-c", help="Profile YAML path"),
-    output: Path = typer.Option(Path("./output"), "--output", "-o"),
+    output: Path = typer.Option(OUTPUT_DIR, "--output", "-o"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Validate only, do not write files"),
     run_after: bool = typer.Option(False, "--run", help="Start Docker after generating"),
     no_pull: bool = typer.Option(False, "--no-pull", help="Skip docker compose pull when using --run"),
@@ -150,7 +151,7 @@ def generate_cmd(
 @app.command()
 def run(
     config: Path = typer.Option(..., "--config", "-c", help="Profile YAML path"),
-    output: Path = typer.Option(Path("./output"), "--output", "-o"),
+    output: Path = typer.Option(OUTPUT_DIR, "--output", "-o"),
     no_pull: bool = typer.Option(False, "--no-pull", help="Skip docker compose pull"),
 ) -> None:
     """Start the generated Docker stack."""
@@ -182,7 +183,7 @@ def run(
 
 @app.command()
 def stop(
-    output: Path = typer.Option(Path("./output"), "--output", "-o", help="Output directory with docker-compose.yaml"),
+    output: Path = typer.Option(OUTPUT_DIR, "--output", "-o", help="Output directory with docker-compose.yaml"),
     config: Optional[Path] = typer.Option(None, "--config", "-c", help="Profile YAML (uses its output_dir if set)"),
     volumes: bool = typer.Option(False, "--volumes", "-v", help="Remove volumes (deletes downloaded models/data)"),
 ) -> None:

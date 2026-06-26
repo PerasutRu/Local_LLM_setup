@@ -31,8 +31,8 @@ The installer bootstraps **uv**, **Python 3.11**, clones the repo, creates a ven
 |------|---------|
 | `~/.local-llm-setup/app` | Git checkout + virtualenv |
 | `~/.local-llm-setup/bin/uv` | Managed uv binary |
-| `~/.local-llm-setup/output` | Generated compose/nginx files |
-| `~/.local-llm-setup/profiles` | Saved YAML profiles |
+| `~/.local-llm-setup/llm_local/output` | Generated compose/nginx files |
+| `~/.local-llm-setup/llm_local/profiles` | Saved YAML profiles |
 | `~/.local/bin/local-llm-setup` | CLI command shim |
 
 Install options (pass after `bash -s --`):
@@ -62,7 +62,7 @@ curl -fsSL https://raw.githubusercontent.com/PerasutRu/Local_LLM_setup/main/unin
 
 | Option | Description |
 |--------|-------------|
-| `--keep-data` | Keep `output/` and `profiles/` under `~/.local-llm-setup` |
+| `--keep-data` | Keep `llm_local/` (output and profiles) under `~/.local-llm-setup` |
 | `--keep-uv` | Keep the managed uv binary |
 | `--yes`, `-y` | Skip confirmation prompt |
 
@@ -86,13 +86,13 @@ local-llm-setup tui
 local-llm-setup doctor
 
 # Generate from profile
-local-llm-setup generate --config profiles/sample.yaml
+local-llm-setup generate --config llm_local/profiles/sample.yaml
 
 # Generate and deploy in one step
-local-llm-setup generate --config profiles/sample.yaml --run
+local-llm-setup generate --config llm_local/profiles/sample.yaml --run
 
 # Start or stop an existing stack
-local-llm-setup run --config profiles/sample.yaml
+local-llm-setup run --config llm_local/profiles/sample.yaml
 local-llm-setup stop
 ```
 
@@ -105,7 +105,7 @@ local-llm-setup stop
 | `tui` | Interactive wizard |
 | `doctor` | Check Docker, GPU, CUDA, nginx (`--json` for machine output) |
 | `detect` | Alias for `doctor` |
-| `generate` | Write `output/` from a profile (`--run` to deploy, `--dry-run` to validate) |
+| `generate` | Write `llm_local/output/` from a profile (`--run` to deploy, `--dry-run` to validate) |
 | `run` | Start a generated stack (`--no-pull` to skip image pull) |
 | `stop` | Stop the stack (`--volumes` to remove data volumes) |
 | `save` | Save a config as a named profile |
@@ -133,7 +133,7 @@ Client → host:8080 (nginx) → ollama:11434 (internal)
 Client → https://….trycloudflare.com (cloudflared) → nginx → ollama
 ```
 
-**`/test` slash command** — curl smoke tests hit `127.0.0.1` on the port from `output/docker-compose.yaml`. When API key auth is on, `/test` reads the key from `output/api_keys.map` and sends `X-API-Key` (Ollama native routes) or `Authorization: Bearer` (`/v1/*` routes, same as OpenAI clients).
+**`/test` slash command** — curl smoke tests hit `127.0.0.1` on the port from `llm_local/output/docker-compose.yaml`. When API key auth is on, `/test` reads the key from `llm_local/output/api_keys.map` and sends `X-API-Key` (Ollama native routes) or `Authorization: Bearer` (`/v1/*` routes, same as OpenAI clients).
 
 ### API key auth (nginx)
 
@@ -144,7 +144,7 @@ When **Yes nginx — with API key auth** is selected, nginx accepts either heade
 | `X-API-Key: <key>` | curl, Ollama CLI, custom HTTP |
 | `Authorization: Bearer <key>` | OpenAI Python SDK, Cursor, LangChain (`api_key=` / `OPENAI_API_KEY`) |
 
-The key is printed after deploy under `api_keys:` and saved in `output/api_keys.map`. `/health` does not require a key.
+The key is printed after deploy under `api_keys:` and saved in `llm_local/output/api_keys.map`. `/health` does not require a key.
 
 ```python
 from openai import OpenAI
@@ -273,10 +273,10 @@ Run the wizard without installing Python on the host:
 
 ```bash
 docker build -t local-llm-setup .
-docker run -it --rm -v "$(pwd)/output:/workspace/output" local-llm-setup tui
+docker run -it --rm -v "$(pwd)/llm_local/output:/workspace/llm_local/output" local-llm-setup tui
 ```
 
-Generated files appear in `./output/`.
+Generated files appear in `./llm_local/output/`.
 
 ## Framework notes
 
@@ -296,10 +296,10 @@ The wizard validates names before generate/deploy; invalid examples include extr
 
 ## Docker Compose
 
-Generated stacks use a single Compose file in `output/docker-compose.yaml`. All services (LLM backends, nginx, cloudflared) join the **`local_llm`** bridge network (`local-llm-setup-local_llm`) so containers talk over Docker DNS (`ollama:11434`, `nginx:80`, etc.) instead of the host loopback.
+Generated stacks use a single Compose file in `llm_local/output/docker-compose.yaml`. All services (LLM backends, nginx, cloudflared) join the **`local_llm`** bridge network (`local-llm-setup-local_llm`) so containers talk over Docker DNS (`ollama:11434`, `nginx:80`, etc.) instead of the host loopback.
 
 ```bash
-cd output
+cd llm_local/output
 docker compose pull
 docker compose up -d
 docker compose ps
@@ -317,10 +317,10 @@ When **nginx is disabled**, each framework publishes its own host port (e.g. `12
 CLI shortcuts:
 
 ```bash
-local-llm-setup generate --config profiles/sample.yaml --run
-local-llm-setup run --config profiles/sample.yaml
-local-llm-setup stop --output ./output
-local-llm-setup stop --output ./output --volumes
+local-llm-setup generate --config llm_local/profiles/sample.yaml --run
+local-llm-setup run --config llm_local/profiles/sample.yaml
+local-llm-setup stop --output ./llm_local/output
+local-llm-setup stop --output ./llm_local/output --volumes
 ```
 
 ## Output files
@@ -349,7 +349,7 @@ When nginx is enabled, the framework binds to `127.0.0.1` internally and only ng
 
 **Stale tunnel URL** — Cloudflare quick-tunnel URLs change every time `local-llm-tunnel` restarts. Run `docker logs local-llm-tunnel 2>&1 | grep trycloudflare` or redeploy to refresh `ACCESS.md`.
 
-**`401 Unauthorized` on `/api/*` or `/v1/*`** — nginx API key auth is enabled. Pass `X-API-Key` or `Authorization: Bearer` with the key from `output/api_keys.map`. OpenAI SDK users set `api_key=` to that value. Regenerate nginx with `/deploy` after upgrading if Bearer auth was added recently.
+**`401 Unauthorized` on `/api/*` or `/v1/*`** — nginx API key auth is enabled. Pass `X-API-Key` or `Authorization: Bearer` with the key from `llm_local/output/api_keys.map`. OpenAI SDK users set `api_key=` to that value. Regenerate nginx with `/deploy` after upgrading if Bearer auth was added recently.
 
 **`502 Bad Gateway` on `/api/*` while `/health` is ok** — nginx is up but cannot reach the LLM backend. For Ollama, regenerate and redeploy so `docker-compose.yaml` includes `OLLAMA_HOST: 0.0.0.0:11434`. Confirm with `docker exec local-llm-nginx wget -qO- http://ollama:11434/api/tags` and check `docker logs local-llm-ollama` if the container is crashing (RAM/GPU).
 

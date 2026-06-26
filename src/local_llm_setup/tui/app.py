@@ -29,6 +29,7 @@ from local_llm_setup.models.config import (
     SetupConfig,
     VllmServeOptions,
 )
+from local_llm_setup.paths import OUTPUT_DIR
 from local_llm_setup.profiles import save_profile
 from local_llm_setup.renderers import generate, prepare_config
 from local_llm_setup.runner import DeployResult, deploy, run_curl_tests, stop_stack
@@ -296,7 +297,7 @@ class LocalLLMSetupApp(App):
         Binding("slash", "focus_command", "Command", show=False),
     ]
 
-    def __init__(self, output_dir: Path = Path("./output"), initial_config: SetupConfig | None = None) -> None:
+    def __init__(self, output_dir: Path = OUTPUT_DIR, initial_config: SetupConfig | None = None) -> None:
         super().__init__()
         self.state = WizardState(output_dir, initial_config)
         self._step_idx = 0
@@ -1226,6 +1227,6 @@ class LocalLLMSetupApp(App):
         self._handle_slash_command(raw)
 
 
-def run_tui(output_dir: Path = Path("./output"), initial_config: SetupConfig | None = None) -> None:
+def run_tui(output_dir: Path = OUTPUT_DIR, initial_config: SetupConfig | None = None) -> None:
     app = LocalLLMSetupApp(output_dir=output_dir, initial_config=initial_config)
     app.run()

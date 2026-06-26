@@ -7,8 +7,7 @@ from pathlib import Path
 import yaml
 
 from local_llm_setup.models.config import SetupConfig
-
-PROFILES_DIR = Path("profiles")
+from local_llm_setup.paths import PROFILES_DIR
 
 
 def save_profile(config: SetupConfig, path: Path | None = None) -> Path:

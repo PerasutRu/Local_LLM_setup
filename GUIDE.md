@@ -55,7 +55,7 @@ curl -fsSL https://raw.githubusercontent.com/PerasutRu/Local_LLM_setup/main/unin
 |--------|------|
 | คำสั่ง CLI | `~/.local/bin/local-llm-setup` |
 | โค้ด + venv | `~/.local-llm-setup/app` |
-| output / profiles | `~/.local-llm-setup/output`, `profiles` |
+| output / profiles | `~/.local-llm-setup/llm_local/output`, `llm_local/profiles` |
 | uv ที่ติดตั้งมาพร้อมกัน | `~/.local-llm-setup/bin/uv` |
 
 ตัวเลือก:
@@ -142,7 +142,7 @@ Slash commands ที่ใช้บ่อย: `/deploy` `/test` `/stop` `/help`
 7. **Summary** — เลือก `Generate & start Docker` (default) หรือ generate อย่างเดียว
 8. **Done** — generate ไฟล์ และรัน `docker compose up -d` (+ `ollama pull` ถ้าใช้ Ollama)
 
-ไฟล์ที่สร้างจะอยู่ใน `./output/` (หรือ path ที่กำหนด)
+ไฟล์ที่สร้างจะอยู่ใน `./llm_local/output/` (หรือ path ที่กำหนด)
 
 ---
 
@@ -159,19 +159,19 @@ local-llm-setup doctor --json
 local-llm-setup detect
 
 # Generate และรัน Docker ทันที
-local-llm-setup generate --config profiles/sample.yaml --run
+local-llm-setup generate --config llm_local/profiles/sample.yaml --run
 
 # รัน stack ที่ generate แล้ว
-local-llm-setup run --config profiles/default.yaml
+local-llm-setup run --config llm_local/profiles/default.yaml
 
 # Validate อย่างเดียว ไม่เขียนไฟล์
-local-llm-setup generate --config profiles/sample.yaml --dry-run
+local-llm-setup generate --config llm_local/profiles/sample.yaml --dry-run
 
 # ระบุ output directory
-local-llm-setup generate --config profiles/sample.yaml --output ./my-output
+local-llm-setup generate --config llm_local/profiles/sample.yaml --output ./my-output
 
 # โหลด profile แล้วเปิด TUI
-local-llm-setup tui --profile profiles/sample.yaml
+local-llm-setup tui --profile llm_local/profiles/sample.yaml
 
 # ดูคำสั่งทั้งหมด
 local-llm-setup --help
@@ -181,7 +181,7 @@ local-llm-setup --help
 
 ## 4. หลัง Generate แล้ว — รัน LLM ด้วย Docker Compose
 
-ไฟล์ `output/docker-compose.yaml` สร้าง **network เดียว** ชื่อ `local_llm` (`local-llm-setup-local_llm`) แล้วเชื่อมทุก container:
+ไฟล์ `llm_local/output/docker-compose.yaml` สร้าง **network เดียว** ชื่อ `local_llm` (`local-llm-setup-local_llm`) แล้วเชื่อมทุก container:
 
 ```
 [host] :8080 ──► nginx ──► ollama:11434
@@ -199,19 +199,19 @@ local-llm-setup --help
 หรือรันด้วย CLI:
 
 ```bash
-local-llm-setup run --config profiles/default.yaml
+local-llm-setup run --config llm_local/profiles/default.yaml
 ```
 
 หรือ generate พร้อม deploy:
 
 ```bash
-local-llm-setup generate --config profiles/sample.yaml --run
+local-llm-setup generate --config llm_local/profiles/sample.yaml --run
 ```
 
 รันด้วยมือ:
 
 ```bash
-cd output
+cd llm_local/output
 docker compose pull
 docker compose up -d
 ```
@@ -247,7 +247,7 @@ docker compose logs -f
 docker compose down
 ```
 
-คำสั่งครบถ้วนอยู่ใน `output/RUN.md` ที่ generate ให้อัตโนมัติ
+คำสั่งครบถ้วนอยู่ใน `llm_local/output/RUN.md` ที่ generate ให้อัตโนมัติ
 
 ---
 
@@ -258,11 +258,11 @@ docker compose down
 ```bash
 docker build -t local-llm-setup .
 docker run -it --rm \
-  -v "$(pwd)/output:/workspace/output" \
+  -v "$(pwd)/llm_local/output:/workspace/llm_local/output" \
   local-llm-setup tui
 ```
 
-ไฟล์ที่ generate จะอยู่ใน `./output/` บนเครื่อง host
+ไฟล์ที่ generate จะอยู่ใน `./llm_local/output/` บนเครื่อง host
 
 ---
 
@@ -278,7 +278,7 @@ docker run -it --rm \
 | `commands.log` | บันทึกคำสั่งที่รันจริงทุกครั้ง (deploy/stop/test) สำหรับ debug |
 | `ACCESS.md` | URL เข้าใช้งานและตัวอย่าง curl |
 
-Profile ที่บันทึกจาก TUI อยู่ใน `profiles/<ชื่อ>.yaml`
+Profile ที่บันทึกจาก TUI อยู่ใน `llm_local/profiles/<ชื่อ>.yaml`
 
 ---
 
@@ -330,6 +330,6 @@ pytest
 ```bash
 source .venv/bin/activate
 local-llm-setup tui          # ทำตาม wizard
-cd output
+cd llm_local/output
 docker compose up -d         # รัน LLM
 ```

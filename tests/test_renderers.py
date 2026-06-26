@@ -13,7 +13,7 @@ from local_llm_setup.renderers.nginx import render_api_keys_map, render_nginx_co
 
 
 def test_render_ollama_compose():
-    setup = load_profile(Path("profiles/sample.yaml"))
+    setup = load_profile(Path("llm_local/profiles/sample.yaml"))
     text = render_compose(setup)
     assert "ollama" in text
     assert "11434" in text
@@ -23,14 +23,14 @@ def test_render_ollama_compose():
 
 
 def test_render_env_with_token():
-    setup = load_profile(Path("profiles/sample.yaml"))
+    setup = load_profile(Path("llm_local/profiles/sample.yaml"))
     setup.hf_token = "hf_test_token"
     env = render_env(setup)
     assert "HF_TOKEN=hf_test_token" in env
 
 
 def test_render_nginx_and_api_keys():
-    setup = load_profile(Path("profiles/sample.yaml"))
+    setup = load_profile(Path("llm_local/profiles/sample.yaml"))
     setup.nginx = NginxConfig(
         enabled=True,
         api_key_auth=True,
@@ -45,7 +45,7 @@ def test_render_nginx_and_api_keys():
 
 
 def test_generate_dry_run(tmp_path: Path):
-    setup = load_profile(Path("profiles/sample.yaml"))
+    setup = load_profile(Path("llm_local/profiles/sample.yaml"))
     setup.output_dir = tmp_path
     result = generate(setup, dry_run=True)
     assert "ollama" in result.compose_yaml
@@ -53,7 +53,7 @@ def test_generate_dry_run(tmp_path: Path):
 
 
 def test_generate_writes_files(tmp_path: Path):
-    setup = load_profile(Path("profiles/sample.yaml"))
+    setup = load_profile(Path("llm_local/profiles/sample.yaml"))
     setup.output_dir = tmp_path
     generate(setup)
     assert (tmp_path / "docker-compose.yaml").exists()

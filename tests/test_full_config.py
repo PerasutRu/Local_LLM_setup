@@ -3,12 +3,13 @@
 from pathlib import Path
 
 from local_llm_setup.models.config import ConfigMode, Framework
+from local_llm_setup.paths import OUTPUT_DIR
 from local_llm_setup.tui.app import WizardState
 from local_llm_setup.tui.full_config import model_fields, runtime_fields
 
 
 def test_full_mode_vllm_builds_all_fields() -> None:
-    state = WizardState(Path("./output"))
+    state = WizardState(OUTPUT_DIR)
     state.framework = Framework.VLLM
     state.mode = ConfigMode.FULL
     state.model_name = "meta-llama/Meta-Llama-3-8B-Instruct"
@@ -52,7 +53,7 @@ def test_full_mode_vllm_builds_all_fields() -> None:
 
 
 def test_full_mode_ollama_env_merged() -> None:
-    state = WizardState(Path("./output"))
+    state = WizardState(OUTPUT_DIR)
     state.framework = Framework.OLLAMA
     state.mode = ConfigMode.FULL
     state.model_name = "llama3.2"
@@ -67,7 +68,7 @@ def test_full_mode_ollama_env_merged() -> None:
 
 
 def test_full_mode_llamacpp_ngl_in_extra_args() -> None:
-    state = WizardState(Path("./output"))
+    state = WizardState(OUTPUT_DIR)
     state.framework = Framework.LLAMACPP
     state.mode = ConfigMode.FULL
     state.model_name = "/models/model.gguf"

@@ -8,7 +8,7 @@
 #
 # Options (pass after bash -s --):
 #   --dir PATH       App directory (default: auto-detect)
-#   --keep-data      Keep ~/.local-llm-setup/output and profiles
+#   --keep-data      Keep ~/.local-llm-setup/llm_local (output and profiles)
 #   --keep-uv        Keep managed uv in ~/.local-llm-setup/bin
 #   --yes, -y        Skip confirmation prompt
 #   -h, --help       Show help
@@ -143,9 +143,9 @@ confirm_uninstall() {
     echo "  - Command: $(get_command_paths)"
     echo "  - App:     $INSTALL_DIR"
     if [ "$KEEP_DATA" = false ]; then
-        echo "  - Data:    $LLS_HOME/output, $LLS_HOME/profiles"
+        echo "  - Data:    $LLS_HOME/llm_local"
     else
-        echo "  - Data:    kept ($LLS_HOME/output, $LLS_HOME/profiles)"
+        echo "  - Data:    kept ($LLS_HOME/llm_local)"
     fi
     if [ "$KEEP_UV" = false ]; then
         echo "  - uv:      $LLS_HOME/bin/uv (if present)"
@@ -188,6 +188,12 @@ remove_data_dir() {
         return 0
     fi
 
+    if [ -d "$LLS_HOME/llm_local" ]; then
+        rm -rf "$LLS_HOME/llm_local"
+        log_success "Removed $LLS_HOME/llm_local"
+    fi
+
+    # Legacy layout (pre-llm_local)
     for sub in output profiles; do
         if [ -d "$LLS_HOME/$sub" ]; then
             rm -rf "$LLS_HOME/$sub"

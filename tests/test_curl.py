@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from local_llm_setup.models.config import ApiKeyEntry, Framework, FrameworkConfig, ModelConfig, NginxConfig, SetupConfig
+from local_llm_setup.paths import OUTPUT_DIR
 from local_llm_setup.runner import run_curl_tests
 
 
@@ -19,7 +20,7 @@ def test_run_curl_tests_success():
             )
         ],
         nginx=NginxConfig(enabled=True, listen_port=80),
-        output_dir=Path("./output"),
+        output_dir=OUTPUT_DIR,
     )
 
     class FakeResult:

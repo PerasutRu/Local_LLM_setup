@@ -13,6 +13,6 @@ venv/
 .env
 *.local
 .DS_Store
-output/
-profiles/*.yaml
-!profiles/sample.yaml
+llm_local/output/
+llm_local/profiles/*.yaml
+!llm_local/profiles/sample.yaml

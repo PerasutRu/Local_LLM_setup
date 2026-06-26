@@ -9,6 +9,7 @@ from textual.widgets import Input, Static
 
 from local_llm_setup.markup import style_section
 from local_llm_setup.models.config import Framework
+from local_llm_setup.paths import OUTPUT_DIR
 
 
 @dataclass(frozen=True)
@@ -216,7 +217,7 @@ def runtime_fields(framework: Framework) -> list[FieldSpec]:
 def setup_fields() -> list[FieldSpec]:
     return [
         FieldSpec("profile-name-input", "profile_name", default="default", hint="Saved profile filename"),
-        FieldSpec("output-dir-input", "output_dir", default="./output", hint="Generated compose output directory"),
+        FieldSpec("output-dir-input", "output_dir", default=str(OUTPUT_DIR), hint="Generated compose output directory"),
     ]
 
 

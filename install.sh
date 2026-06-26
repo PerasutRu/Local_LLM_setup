@@ -418,10 +418,10 @@ ensure_local_bin_on_path() {
 }
 
 prepare_data_dir() {
-    mkdir -p "$LLS_HOME"/{output,profiles}
-    if [ ! -f "$LLS_HOME/profiles/default.yaml" ] && [ -f "$INSTALL_DIR/profiles/sample.yaml" ]; then
-        cp "$INSTALL_DIR/profiles/sample.yaml" "$LLS_HOME/profiles/default.yaml"
-        log_success "Copied sample profile to $LLS_HOME/profiles/default.yaml"
+    mkdir -p "$LLS_HOME/llm_local"/{output,profiles}
+    if [ ! -f "$LLS_HOME/llm_local/profiles/default.yaml" ] && [ -f "$INSTALL_DIR/llm_local/profiles/sample.yaml" ]; then
+        cp "$INSTALL_DIR/llm_local/profiles/sample.yaml" "$LLS_HOME/llm_local/profiles/default.yaml"
+        log_success "Copied sample profile to $LLS_HOME/llm_local/profiles/default.yaml"
     fi
 }
 

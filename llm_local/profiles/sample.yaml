@@ -1,5 +1,5 @@
 profile_name: sample
-output_dir: ./output
+output_dir: llm_local/output
 host: null
 frameworks:
   - framework: ollama

@@ -8,6 +8,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from local_llm_setup.paths import OUTPUT_DIR
+
 
 class Framework(str, Enum):
     OLLAMA = "ollama"
@@ -171,7 +173,7 @@ class NginxConfig(BaseModel):
 
 class SetupConfig(BaseModel):
     profile_name: str = "default"
-    output_dir: Path = Path("./output")
+    output_dir: Path = OUTPUT_DIR
     host: HostInfo | None = None
     frameworks: list[FrameworkConfig] = Field(default_factory=list)
     nginx: NginxConfig = Field(default_factory=NginxConfig)

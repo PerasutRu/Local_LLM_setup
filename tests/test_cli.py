@@ -24,7 +24,7 @@ def test_doctor_json():
 def test_generate_dry_run():
     result = runner.invoke(
         app,
-        ["generate", "--config", "profiles/sample.yaml", "--dry-run"],
+        ["generate", "--config", "llm_local/profiles/sample.yaml", "--dry-run"],
     )
     assert result.exit_code == 0
     assert "Validation passed" in result.stdout or "dry run" in result.stdout.lower()
