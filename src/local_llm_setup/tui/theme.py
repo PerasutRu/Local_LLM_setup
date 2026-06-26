@@ -211,4 +211,42 @@ Input:focus {
 #command-input:focus {
     border: solid #8b3a3a;
 }
+
+/* Slash-command mode: keep footer menus visible above deploy log / access URLs */
+.command-mode #step-body {
+    height: auto;
+    max-height: 30%;
+    min-height: 3;
+}
+
+.command-mode #log-panel {
+    height: 0;
+    min-height: 0;
+    margin: 0;
+    overflow: hidden;
+    opacity: 0;
+}
+
+.command-mode .access-line,
+.command-mode .access-line-url {
+    height: 0;
+    overflow: hidden;
+    opacity: 0;
+}
+
+.command-mode #choices-panel {
+    max-height: 35%;
+    min-height: 5;
+}
+
+.command-mode #command-suggest {
+    height: auto;
+    min-height: 3;
+    max-height: 14;
+    overflow-y: auto;
+}
+
+.command-mode #footer-panel {
+    layer: overlay;
+}
 """

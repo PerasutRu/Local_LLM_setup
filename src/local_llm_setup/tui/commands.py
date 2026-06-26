@@ -67,18 +67,27 @@ def _command_match(sc: SlashCommand) -> CommandMatch:
 
 
 def match_commands(query: str) -> list[CommandMatch]:
-    """Filter slash commands by partial input (aliases resolve to canonical names)."""
+    """Filter slash commands by canonical name prefix (not aliases or descriptions)."""
     stripped = query.strip()
     if not stripped.startswith("/"):
         return []
     name, _ = parse_command(query)
-    token = name or stripped.lstrip("/").lower()
+    token = name.lower()
+    if not token:
+        return [_command_match(sc) for sc in SLASH_COMMANDS]
     matches: list[CommandMatch] = []
     for sc in SLASH_COMMANDS:
-        names = (sc.name, *sc.aliases)
-        if any(candidate.startswith(token) for candidate in names):
+        if sc.name.startswith(token):
             matches.append(_command_match(sc))
     return matches
+
+
+def match_commands_for_tab(query: str) -> list[CommandMatch]:
+    """Tab autocomplete — same name filter, but requires a typed prefix."""
+    name, _ = parse_command(query)
+    if not name:
+        return []
+    return match_commands(query)
 
 
 def format_suggestions(query: str, *, selected: int = 0) -> list[str]:
@@ -95,11 +104,35 @@ def format_suggestions(query: str, *, selected: int = 0) -> list[str]:
     return lines
 
 
-def selected_match(query: str, selected: int) -> CommandMatch | None:
-    matches = match_commands(query)
-    if not matches:
+def selected_match(
+    query: str,
+    selected: int,
+    *,
+    matches: list[CommandMatch] | None = None,
+) -> CommandMatch | None:
+    rows = matches if matches is not None else match_commands(query)
+    if not rows:
         return None
-    return matches[min(max(selected, 0), len(matches) - 1)]
+    return rows[min(max(selected, 0), len(rows) - 1)]
+
+
+def resolve_submit_command(query: str, selected: int) -> str:
+    """Return the highlighted suggestion on Enter, keeping any trailing args."""
+    stripped = query.strip()
+    if not stripped:
+        return stripped
+    matches = match_commands(stripped)
+    if not matches:
+        return stripped
+    row = selected_match(stripped, selected)
+    if row is None:
+        return stripped
+    name, args = parse_command(stripped)
+    if args:
+        return f"{row.display} {' '.join(args)}"
+    if len(matches) > 1 or not name or name != row.canonical:
+        return row.display
+    return stripped
 
 
 def format_help_lines() -> list[str]:

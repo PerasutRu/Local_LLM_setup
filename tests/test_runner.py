@@ -104,3 +104,25 @@ def test_stop_stack_missing_compose(tmp_path: Path):
     result = stop_stack(tmp_path)
     assert not result.success
     assert "Missing" in (result.error or "")
+
+
+def test_stop_stack_remove_volumes_when_stopped(tmp_path: Path):
+    (tmp_path / "docker-compose.yaml").write_text(
+        "services:\n  ollama:\n    container_name: local-llm-demo-ollama\n",
+        encoding="utf-8",
+    )
+    calls: list[str] = []
+
+    def fake_run(cmd, cwd, **kw):
+        calls.append(" ".join(cmd))
+        from local_llm_setup.runner import DeployStep
+
+        return DeployStep(" ".join(cmd), 0, "", "")
+
+    with patch("local_llm_setup.runner.any_container_running", return_value=False), patch(
+        "local_llm_setup.runner._run", side_effect=fake_run
+    ):
+        result = stop_stack(tmp_path, remove_volumes=True)
+
+    assert result.success
+    assert any("down -v" in c or "down" in c and "-v" in c for c in calls)

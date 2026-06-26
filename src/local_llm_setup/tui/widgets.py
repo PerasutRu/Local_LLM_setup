@@ -349,7 +349,12 @@ class CommandInput(Input):
 
     BINDINGS = [
         Binding("tab", "request_autocomplete", "Autocomplete", show=False),
+        Binding("enter", "submit_command", "Run command", show=False),
     ]
+
+    def action_submit_command(self) -> None:
+        """Submit slash command without the app-level Enter handler stealing focus."""
+        self.post_message(Input.Submitted(self, self.value))
 
     def _on_focus(self, event: Focus) -> None:
         super()._on_focus(event)

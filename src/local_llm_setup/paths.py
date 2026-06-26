@@ -39,3 +39,74 @@ def project_name_for_output_dir(output_dir: Path) -> str:
     if resolved == OUTPUT_DIR.resolve():
         return compose_project_name("output")
     return compose_project_name(resolved.name)
+
+
+# Container paths where each provider stores downloaded models.
+_MODEL_CACHE_CONTAINER_PATHS: dict[str, str] = {
+    "ollama": "/root/.ollama",
+    "vllm": "/root/.cache/huggingface",
+    "sglang": "/root/.cache/huggingface",
+    "llamacpp": "/models",
+}
+
+
+def model_cache_dir_name(framework: str) -> str:
+    """Output subfolder for a provider's model cache, e.g. model-ollama."""
+    return f"model-{framework}"
+
+
+def model_cache_dir(output_dir: Path, framework: str) -> Path:
+    """Absolute path to the default per-provider model cache under an output directory."""
+    return Path(output_dir) / model_cache_dir_name(framework)
+
+
+def model_cache_container_path(framework: str) -> str:
+    """In-container path where the provider reads/writes model files."""
+    return _MODEL_CACHE_CONTAINER_PATHS[framework]
+
+
+def resolve_model_cache_host_path(
+    output_dir: Path,
+    framework: str,
+    custom: Path | None = None,
+) -> Path:
+    """Resolve the host path used for a provider's model cache."""
+    if custom is not None:
+        path = Path(custom).expanduser()
+        if not path.is_absolute():
+            path = Path(output_dir) / path
+        return path.resolve()
+    return model_cache_dir(output_dir, framework).resolve()
+
+
+def model_cache_is_under_output(host_path: Path, output_dir: Path) -> bool:
+    """Return True when the cache folder lives inside the profile output directory."""
+    try:
+        host_path.resolve().relative_to(Path(output_dir).resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def model_cache_bind_mount(
+    output_dir: Path,
+    framework: str,
+    custom: Path | None = None,
+) -> str:
+    """Docker-compose bind mount for a provider model cache."""
+    host = resolve_model_cache_host_path(output_dir, framework, custom)
+    container = model_cache_container_path(framework)
+    out = Path(output_dir).resolve()
+    if model_cache_is_under_output(host, out):
+        rel = host.resolve().relative_to(out)
+        return f"./{rel.as_posix()}:{container}"
+    return f"{host}:{container}"
+
+
+def model_cache_bind_mount_for_framework(
+    output_dir: Path,
+    framework: str,
+    custom: Path | None = None,
+) -> str:
+    """Alias kept for readability at call sites."""
+    return model_cache_bind_mount(output_dir, framework, custom)

@@ -70,6 +70,15 @@ def test_vllm_gemma4_style_compose() -> None:
     assert "PYTORCH_CUDA_ALLOC_CONF" in text
 
 
+def test_vllm_default_model_cache_mount() -> None:
+    plugin = get_plugin(Framework.VLLM)
+    fc = plugin.default_config("meta-llama/Meta-Llama-3-8B-Instruct")
+    text = render_compose(SetupConfig(frameworks=[fc]))
+
+    assert "./model-vllm:/root/.cache/huggingface" in text
+    assert "HF_HOME" in text
+
+
 def test_vllm_serve_entrypoint_without_audio() -> None:
     plugin = get_plugin(Framework.VLLM)
     fc = plugin.default_config("meta-llama/Meta-Llama-3-8B-Instruct")

@@ -29,7 +29,7 @@ from local_llm_setup.models.config import (
     SetupConfig,
     VllmServeOptions,
 )
-from local_llm_setup.paths import OUTPUT_DIR, normalize_output_dir
+from local_llm_setup.paths import OUTPUT_DIR, normalize_output_dir, resolve_model_cache_host_path
 from local_llm_setup.instances import list_instances, list_running_instances
 from local_llm_setup.profiles import delete_profile, load_profile, save_profile
 from local_llm_setup.renderers import generate, prepare_config
@@ -59,7 +59,9 @@ from local_llm_setup.tui.commands import (
     format_help_lines,
     format_suggestions,
     match_commands,
+    match_commands_for_tab,
     parse_command,
+    resolve_submit_command,
     selected_match,
 )
 from local_llm_setup.tui.theme import APP_CSS, LOGO
@@ -116,6 +118,7 @@ class WizardState:
         self.vllm_mm_limit: str = ""
         self.vllm_trust_remote: str = "false"
         self.vllm_prefix_cache: str = "false"
+        self.model_cache_host_path_text: str = ""
 
         if initial and initial.frameworks:
             fc = initial.frameworks[0]
@@ -141,6 +144,9 @@ class WizardState:
             self.gpu_device_ids_text = ",".join(fc.gpu_device_ids)
             self.ipc = fc.ipc or ""
             self.extra_volumes_text = format_volume_lines(fc.extra_volumes)
+            self.model_cache_host_path_text = (
+                str(fc.model_cache_host_path) if fc.model_cache_host_path else ""
+            )
             self.command_shell = fc.command_shell or ""
             if fc.vllm:
                 v = fc.vllm
@@ -193,6 +199,8 @@ class WizardState:
         )
         fc.capabilities = self.capabilities
         fc.image_tag = self.image_tag or None
+        cache_path = self.model_cache_host_path_text.strip()
+        fc.model_cache_host_path = Path(cache_path) if cache_path else None
 
         if self.mode == ConfigMode.FULL:
             if self.port is not None:
@@ -321,9 +329,13 @@ class LocalLLMSetupApp(App):
         self._deploy_log: CopyableRichLog | None = None
         self._deploy_succeeded = False
         self._remove_volumes_on_stop = False
+        self._remove_volumes_on_delete = False
+        self._remove_model_cache_on_delete = False
         self._stop_target: str = "current"
         self._delete_targets: list[str] = []
         self._command_suggest_index = 0
+        self._command_bar_active = False
+        self._command_input_sync = False
         self._editing_instance: str | None = None
         self._command_aliases = {
             sc.name: sc.name for sc in SLASH_COMMANDS
@@ -406,7 +418,8 @@ class LocalLLMSetupApp(App):
         cl = ChoiceList(choices, multi=multi, id=id)
         panel.mount(cl)
         self._active_choices = cl
-        self.call_after_refresh(cl.focus)
+        if not self._command_bar_active and not self._command_input_active():
+            self.call_after_refresh(cl.focus)
         return cl
 
     def _section_label(self, text: str) -> Static:
@@ -414,6 +427,18 @@ class LocalLLMSetupApp(App):
 
     def _skill_line(self, key: str, val: str) -> Static:
         return Static(f"[#c9a227]{key}:[/] {val}", classes="skill-line")
+
+    def _focus_next_field(self, current_id: str, field_ids: list[str]) -> None:
+        if current_id not in field_ids:
+            return
+        next_index = field_ids.index(current_id) + 1
+        if next_index >= len(field_ids):
+            return
+        body = self.query_one("#step-body", VerticalScroll)
+        try:
+            body.query_one(f"#{field_ids[next_index]}", Input).focus()
+        except Exception:
+            return
 
     def _next(self) -> None:
         if self._step_idx < len(self._wizard_steps()) - 1:
@@ -468,9 +493,14 @@ class LocalLLMSetupApp(App):
         self._forward_to_choices("cursor_down")
 
     def action_nav_toggle(self) -> None:
+        if self._command_input_active():
+            return
         self._forward_to_choices("toggle")
 
     def action_nav_submit(self) -> None:
+        if self._command_input_active():
+            self.query_one("#command-input", CommandInput).action_submit_command()
+            return
         if self._active_choices is not None:
             self._forward_to_choices("submit")
             return
@@ -595,6 +625,7 @@ class LocalLLMSetupApp(App):
             "vllm-mm-limit-input": s.vllm_mm_limit,
             "vllm-trust-remote-input": s.vllm_trust_remote,
             "vllm-prefix-cache-input": s.vllm_prefix_cache,
+            "model-cache-path-input": s.model_cache_host_path_text,
         }
 
     def _sync_model_fields(self) -> None:
@@ -661,6 +692,7 @@ class LocalLLMSetupApp(App):
         self.state.command_shell = read_field(body, "command-shell-input")
         self.state.ollama_models = read_field(body, "ollama-models-input", "/root/.ollama")
         self.state.ollama_host = read_field(body, "ollama-host-input", "0.0.0.0:11434")
+        self.state.model_cache_host_path_text = read_field(body, "model-cache-path-input")
         self.state.profile_name = read_field(body, "profile-name-input", "default") or "default"
         self.state.output_dir = normalize_output_dir(self.state.profile_name, self.state.output_dir)
 
@@ -719,9 +751,18 @@ class LocalLLMSetupApp(App):
                 id="image-tag-input",
             )
         )
+        default_cache = normalize_output_dir(self.state.profile_name, self.state.output_dir) / f"model-{fw.value}"
+        body.mount(Static("  Model cache host path (optional)", classes="skill-line"))
+        body.mount(
+            Input(
+                value=self.state.model_cache_host_path_text,
+                placeholder=str(default_cache),
+                id="model-cache-path-input",
+            )
+        )
         self._update_footer(
-            "Set model and optional custom Docker image, then press Enter.",
-            "Enter moves to image field · empty image = default",
+            "Set model, Docker image, and optional cache path · Enter to continue.",
+            "Tab through fields · empty cache = default under output/",
         )
         self.call_after_refresh(inp.focus)
 
@@ -734,7 +775,7 @@ class LocalLLMSetupApp(App):
         mount_fields(body, setup_fields(self.state.profile_name), self._model_field_values())
         body.mount(self._section_label("runtime · Docker & networking"))
         values = self._model_field_values()
-        fields = runtime_fields(fw, self.state.host)
+        fields = runtime_fields(fw, self.state.host, self.state.profile_name)
         for spec in fields:
             if not values.get(spec.id) and spec.default:
                 values[spec.id] = spec.default
@@ -880,6 +921,10 @@ class LocalLLMSetupApp(App):
                     body.mount(self._skill_line("tool_call_parser", v.tool_call_parser))
                 if v.limit_mm_per_prompt:
                     body.mount(self._skill_line("limit_mm_per_prompt", v.limit_mm_per_prompt))
+        cache_path = resolve_model_cache_host_path(
+            config.output_dir, fc.framework.value, fc.model_cache_host_path
+        )
+        body.mount(self._skill_line("model_cache", str(cache_path)))
         body.mount(
             self._skill_line(
                 "capabilities",
@@ -1043,17 +1088,18 @@ class LocalLLMSetupApp(App):
             if on_output:
                 on_output(f"\n[bold #c9a227]→ {name}[/bold #c9a227]")
 
-            if inst.status == "running":
-                config = None
-                if inst.profile_path.is_file():
-                    try:
-                        config = load_profile(inst.profile_path)
-                    except OSError:
-                        config = None
+            config = None
+            if inst.profile_path.is_file():
+                try:
+                    config = load_profile(inst.profile_path)
+                except OSError:
+                    config = None
+
+            if inst.status == "running" or self._remove_volumes_on_delete:
                 stop_result = stop_stack(
                     inst.output_dir,
                     config=config,
-                    remove_volumes=False,
+                    remove_volumes=self._remove_volumes_on_delete,
                     on_output=on_output,
                     on_status=on_status,
                 )
@@ -1061,7 +1107,12 @@ class LocalLLMSetupApp(App):
                     errors.append(f"{name}: stop failed — {stop_result.error or 'unknown error'}")
                     continue
 
-            removed = delete_profile(name)
+            removed = delete_profile(
+                name,
+                config=config,
+                remove_output=True,
+                remove_model_cache=self._remove_model_cache_on_delete,
+            )
             if not removed:
                 errors.append(f"{name}: nothing to delete")
                 continue
@@ -1120,27 +1171,45 @@ class LocalLLMSetupApp(App):
             log.write(line)
         log.scroll_end(animate=False)
 
+    def _set_command_mode(self, active: bool) -> None:
+        """Shrink step content so slash-command menus are not covered by deploy logs."""
+        root = self.query_one("#root", Container)
+        if active:
+            root.add_class("command-mode")
+        else:
+            root.remove_class("command-mode")
+
+    def _exit_command_mode_if_needed(self) -> None:
+        if self._command_input_active() or self._command_bar_active:
+            return
+        self._clear_command_suggestions()
+        self._set_command_mode(False)
+
     def action_focus_command(self) -> None:
+        self._command_bar_active = True
+        self._set_command_mode(True)
         inp = self.query_one("#command-input", CommandInput)
-        inp.focus()
         if not inp.value.startswith("/"):
             inp.value = "/" + inp.value
-        self._update_command_suggestions()
+        inp.focus()
+        self.call_after_refresh(self._update_command_suggestions)
 
     def action_autocomplete_command(self) -> None:
         if not self._command_input_active():
             return
         inp = self.query_one("#command-input", CommandInput)
-        matches = match_commands(inp.value)
+        matches = match_commands_for_tab(inp.value)
         if not matches:
             return
-        row = selected_match(inp.value, self._command_suggest_index)
+        row = selected_match(inp.value, self._command_suggest_index, matches=matches)
         if row is None:
             return
         if inp.value == row.display and len(matches) > 1:
             self._command_suggest_index = (self._command_suggest_index + 1) % len(matches)
             row = matches[self._command_suggest_index]
+        self._command_input_sync = True
         inp.value = row.display
+        self._command_input_sync = False
         self._update_command_suggestions()
 
     def _command_input_active(self) -> bool:
@@ -1157,7 +1226,7 @@ class LocalLLMSetupApp(App):
 
     def _update_command_suggestions(self) -> None:
         suggest = self.query_one("#command-suggest", Static)
-        if not self._command_input_active():
+        if not (self._command_input_active() or self._command_bar_active):
             suggest.update("")
             return
         inp = self.query_one("#command-input", CommandInput)
@@ -1361,9 +1430,83 @@ class LocalLLMSetupApp(App):
         self._active_choices = cl
         self.call_after_refresh(cl.focus)
         self._update_footer(
-            "Space เลือกหลาย profile · Enter ลบที่เลือก · running stack จะถูก stop ก่อน",
+            "Space เลือกหลาย profile · Enter ยืนยัน · ขั้นถัดไปจะถาม volumes และ model cache",
             "↑↓ navigate · Esc cancel",
         )
+
+    def _show_delete_volumes_picker(self) -> None:
+        count = len(self._delete_targets)
+        body = self.query_one("#step-body", VerticalScroll)
+        body.remove_children()
+        body.mount(self._section_label(f"delete profile · {count} selected · docker volumes"))
+
+        names = ", ".join(self._delete_targets[:5])
+        if count > 5:
+            names += f", … (+{count - 5})"
+        body.mount(Static(f"  [#c9a227]{names}[/]", classes="skill-line"))
+        body.mount(
+            Static(
+                "  [dim]Model cache อยู่ใน path ที่ตั้งไว้ต่อ profile (default: output/model-{provider}/)[/dim]",
+                classes="skill-line",
+            )
+        )
+        body.mount(
+            Static(
+                "  [dim]เลือกลบ Docker volumes ถ้ามี named volumes จาก compose เก่า[/dim]",
+                classes="skill-line",
+            )
+        )
+
+        choices: list[tuple[str, str]] = [
+            ("volumes:yes", "ลบ Docker volumes ด้วย (compose down -v)"),
+            ("volumes:no", "เก็บ Docker volumes ไว้"),
+            ("__cancel__", "Cancel"),
+        ]
+
+        panel = self.query_one("#choices-panel", Container)
+        panel.remove_children()
+        cl = ChoiceList(choices, id="delete-volumes-choice")
+        panel.mount(cl)
+        self._active_choices = cl
+        self.call_after_refresh(cl.focus)
+        self._update_footer("เลือกว่าจะลบ Docker volumes หรือไม่", "↑↓ Enter confirm · Esc cancel")
+
+    def _show_delete_model_cache_picker(self) -> None:
+        count = len(self._delete_targets)
+        body = self.query_one("#step-body", VerticalScroll)
+        body.remove_children()
+        body.mount(self._section_label(f"delete profile · {count} selected · model cache"))
+
+        names = ", ".join(self._delete_targets[:5])
+        if count > 5:
+            names += f", … (+{count - 5})"
+        body.mount(Static(f"  [#c9a227]{names}[/]", classes="skill-line"))
+        body.mount(
+            Static(
+                "  [dim]ลบ model cache = ลบโฟลเดอร์โมเดลที่ดาวน์โหลดไว้ (รวม custom path นอก output)[/dim]",
+                classes="skill-line",
+            )
+        )
+        body.mount(
+            Static(
+                "  [dim]ถ้าเลือกเก็บ cache ไว้ จะลบแค่ profile YAML และไฟล์ deploy[/dim]",
+                classes="skill-line",
+            )
+        )
+
+        choices: list[tuple[str, str]] = [
+            ("cache:yes", "ลบ model cache ด้วย"),
+            ("cache:no", "เก็บ model cache ไว้"),
+            ("__cancel__", "Cancel"),
+        ]
+
+        panel = self.query_one("#choices-panel", Container)
+        panel.remove_children()
+        cl = ChoiceList(choices, id="delete-model-cache-choice")
+        panel.mount(cl)
+        self._active_choices = cl
+        self.call_after_refresh(cl.focus)
+        self._update_footer("เลือกว่าจะลบ model cache หรือไม่", "↑↓ Enter confirm · Esc cancel")
 
     def _begin_delete_profiles(self, *, label: str) -> None:
         panel = self.query_one("#choices-panel", Container)
@@ -1393,6 +1536,8 @@ class LocalLLMSetupApp(App):
             return
         resolved = self._command_aliases.get(cmd, cmd)
         self._clear_command_suggestions()
+        self._command_bar_active = False
+        self._set_command_mode(False)
 
         if resolved == "help":
             self._write_command_output(format_help_lines())
@@ -1410,7 +1555,7 @@ class LocalLLMSetupApp(App):
         if resolved == "delete-profile":
             if args:
                 self._delete_targets = args
-                self._begin_delete_profiles(label=f"delete profile · {', '.join(args)}")
+                self._show_delete_volumes_picker()
                 return
             self._show_delete_profile_picker()
             return
@@ -1569,6 +1714,18 @@ class LocalLLMSetupApp(App):
         if self.step != "model" or self.state.mode == ConfigMode.FULL:
             return
         self.state.image_tag = event.value.strip()
+        if not self.state.model_name:
+            return
+        try:
+            self.query_one("#model-cache-path-input", Input).focus()
+        except Exception:
+            self._next()
+
+    @on(Input.Submitted, "#model-cache-path-input")
+    def on_model_cache_path_submitted(self, event: Input.Submitted) -> None:
+        if self.step != "model" or self.state.mode == ConfigMode.FULL:
+            return
+        self.state.model_cache_host_path_text = event.value.strip()
         if self.state.model_name:
             self._next()
 
@@ -1580,12 +1737,18 @@ class LocalLLMSetupApp(App):
         fw = self.state.framework
         if self.step == "model" and self.state.mode == ConfigMode.FULL and fw:
             self._sync_model_fields()
-            if iid == model_fields(fw)[-1].id and self.state.model_name:
+            fields = model_fields(fw)
+            if iid == fields[-1].id and self.state.model_name:
                 self._next()
+            else:
+                self._focus_next_field(iid, [f.id for f in fields])
         elif self.step == "runtime" and fw:
             self._sync_runtime_fields()
-            if iid == runtime_fields(fw, self.state.host)[-1].id:
+            fields = runtime_fields(fw, self.state.host, self.state.profile_name)
+            if iid == fields[-1].id:
                 self._next()
+            else:
+                self._focus_next_field(iid, [f.id for f in fields])
 
     @on(ChoiceList.Submitted, "#cap-choice")
     def on_capabilities(self, event: ChoiceList.Submitted) -> None:
@@ -1688,7 +1851,42 @@ class LocalLLMSetupApp(App):
             return
 
         count = len(self._delete_targets)
-        label = "delete profile · all" if "__all__" in selected else f"delete profile · {count} selected"
+        self._update_footer(
+            f"Selected {count} profile(s) — choose volume removal next",
+            "/delete-profile · Esc cancel",
+        )
+        self._show_delete_volumes_picker()
+
+    @on(ChoiceList.Submitted, "#delete-volumes-choice")
+    def on_delete_volumes_choice(self, event: ChoiceList.Submitted) -> None:
+        choice = event.selected_ids[0]
+        if choice == "__cancel__":
+            self._update_footer("Cancelled.", "/help · /instances")
+            return
+
+        self._remove_volumes_on_delete = choice == "volumes:yes"
+        self._show_delete_model_cache_picker()
+
+    @on(ChoiceList.Submitted, "#delete-model-cache-choice")
+    def on_delete_model_cache_choice(self, event: ChoiceList.Submitted) -> None:
+        choice = event.selected_ids[0]
+        if choice == "__cancel__":
+            self._update_footer("Cancelled.", "/help · /instances")
+            return
+
+        self._remove_model_cache_on_delete = choice == "cache:yes"
+        count = len(self._delete_targets)
+        parts: list[str] = []
+        if self._remove_volumes_on_delete:
+            parts.append("volumes")
+        if self._remove_model_cache_on_delete:
+            parts.append("cache")
+        suffix = f" + {' + '.join(parts)}" if parts else ""
+        label = (
+            f"delete profile · all{suffix}"
+            if count > 1 and count == len(list_instances())
+            else f"delete profile · {count} selected{suffix}"
+        )
         self._begin_delete_profiles(label=label)
 
     @on(ChoiceList.Submitted, "#provider-command")
@@ -1711,22 +1909,33 @@ class LocalLLMSetupApp(App):
 
     @on(CommandInput.Focused)
     def on_command_focused(self, event: CommandInput.Focused) -> None:
-        self._update_command_suggestions()
+        self._command_bar_active = True
+        self._set_command_mode(True)
+        self.call_after_refresh(self._update_command_suggestions)
 
     @on(CommandInput.Blurred)
     def on_command_blurred(self, event: CommandInput.Blurred) -> None:
-        self._clear_command_suggestions()
+        def _maybe_exit() -> None:
+            if not self._command_input_active():
+                self._command_bar_active = False
+            self._exit_command_mode_if_needed()
+
+        self.call_after_refresh(_maybe_exit)
 
     @on(Input.Changed, "#command-input")
     def on_command_changed(self, event: Input.Changed) -> None:
+        if self._command_input_sync:
+            return
         self._command_suggest_index = 0
         self._update_command_suggestions()
 
     @on(Input.Submitted, "#command-input")
     def on_command_submitted(self, event: Input.Submitted) -> None:
-        raw = event.value.strip()
+        raw = resolve_submit_command(event.value, self._command_suggest_index).strip()
         event.input.value = ""
+        self._command_bar_active = False
         self._clear_command_suggestions()
+        self._set_command_mode(False)
         if not raw:
             return
         self._handle_slash_command(raw)

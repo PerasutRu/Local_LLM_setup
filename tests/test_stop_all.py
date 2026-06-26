@@ -10,7 +10,7 @@ from local_llm_setup.runner import DeployResult, stop_all_stacks
 
 
 def test_stop_all_stacks_no_running():
-    with patch("local_llm_setup.instances.list_running_instances", return_value=[]):
+    with patch("local_llm_setup.runner.list_running_instances", return_value=[]):
         result = stop_all_stacks()
     assert result.success
     assert result.steps == []
@@ -35,7 +35,7 @@ def test_stop_all_stacks_stops_each(tmp_path: Path):
         calls.append(output_dir)
         return DeployResult(success=True, steps=[])
 
-    with patch("local_llm_setup.instances.list_running_instances", return_value=[inst_a, inst_b]), patch(
+    with patch("local_llm_setup.runner.list_running_instances", return_value=[inst_a, inst_b]), patch(
         "local_llm_setup.runner.stop_stack", side_effect=fake_stop
     ), patch("local_llm_setup.profiles.load_profile", side_effect=OSError):
         result = stop_all_stacks()

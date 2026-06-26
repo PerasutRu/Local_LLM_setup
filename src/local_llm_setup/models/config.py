@@ -142,6 +142,7 @@ class FrameworkConfig(BaseModel):
     shm_size: str = "16gb"
     ipc: str | None = None
     extra_volumes: list[str] = Field(default_factory=list)
+    model_cache_host_path: Path | None = None
     command_shell: str | None = None
     vllm: VllmServeOptions | None = None
 
@@ -150,6 +151,13 @@ class FrameworkConfig(BaseModel):
         if self.port == 8000 and self.framework != Framework.VLLM:
             self.port = FRAMEWORK_DEFAULT_PORTS.get(self.framework, self.port)
         return self
+
+    @field_validator("model_cache_host_path", mode="before")
+    @classmethod
+    def empty_cache_path_is_none(cls, v: object) -> Path | None:
+        if v is None or v == "":
+            return None
+        return Path(v) if not isinstance(v, Path) else v
 
 
 class ApiKeyEntry(BaseModel):

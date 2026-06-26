@@ -10,7 +10,7 @@ from textual.widgets import Input, Static
 from local_llm_setup.frameworks import get_plugin
 from local_llm_setup.markup import style_section
 from local_llm_setup.models.config import Framework, HostInfo
-from local_llm_setup.paths import OUTPUT_DIR
+from local_llm_setup.paths import OUTPUT_DIR, model_cache_dir_name, output_dir_for
 
 
 @dataclass(frozen=True)
@@ -179,7 +179,21 @@ def docker_image_field(framework: Framework, host: HostInfo | None = None) -> Fi
     )
 
 
-def runtime_fields(framework: Framework, host: HostInfo | None = None) -> list[FieldSpec]:
+def model_cache_field(framework: Framework, profile_name: str = "default") -> FieldSpec:
+    default_dir = output_dir_for(profile_name) / model_cache_dir_name(framework.value)
+    return FieldSpec(
+        "model-cache-path-input",
+        "model_cache_host_path",
+        placeholder=str(default_dir),
+        hint=f"Host folder for models (empty = output/{model_cache_dir_name(framework.value)})",
+    )
+
+
+def runtime_fields(
+    framework: Framework,
+    host: HostInfo | None = None,
+    profile_name: str = "default",
+) -> list[FieldSpec]:
     fields = [
         FieldSpec("port-input", "port", hint="Container listen port (e.g. 8000)"),
         FieldSpec("bind-host-input", "bind_host", default="127.0.0.1", hint="Host bind address (127.0.0.1 or 0.0.0.0)"),
@@ -212,7 +226,7 @@ def runtime_fields(framework: Framework, host: HostInfo | None = None) -> list[F
                     "ollama-models-input",
                     "OLLAMA_MODELS",
                     default="/root/.ollama",
-                    hint="Ollama models path inside container (volume is fixed)",
+                    hint="Ollama models path inside container (bind-mounted from ./model-ollama)",
                 ),
                 FieldSpec(
                     "ollama-host-input",
@@ -222,6 +236,7 @@ def runtime_fields(framework: Framework, host: HostInfo | None = None) -> list[F
                 ),
             ]
         )
+    fields.append(model_cache_field(framework, profile_name))
     return fields
 
 

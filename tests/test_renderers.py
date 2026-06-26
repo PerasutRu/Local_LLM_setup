@@ -17,7 +17,8 @@ def test_render_ollama_compose():
     text = render_compose(setup)
     assert "ollama" in text
     assert "11434" in text
-    assert "ollama_data_sample" in text
+    assert "ollama_data_sample" not in text
+    assert "./model-ollama:/root/.ollama" in text
     assert "OLLAMA_HOST" in text
     assert "0.0.0.0:11434" in text
 
@@ -66,6 +67,7 @@ def test_generate_writes_files(tmp_path: Path, monkeypatch):
     assert (out / "docker-compose.yaml").exists()
     assert (out / ".env").exists()
     assert (out / "RUN.md").exists()
+    assert (out / "model-ollama").is_dir()
 
 
 def test_vllm_compose_has_model():

@@ -43,7 +43,7 @@ def test_compose_uses_per_profile_container_names():
     assert "container_name: local-llm-prod-nginx" in compose
     assert "container_name: local-llm-prod-tunnel" in compose
     assert "local-llm-setup-prod-local_llm" in compose
-    assert "ollama_data_prod" in compose
+    assert "./model-ollama:/root/.ollama" in compose
     assert compose_project_name("prod") == "local-llm-prod"
     assert tunnel_container_name(config) == "local-llm-prod-tunnel"
 

@@ -25,13 +25,13 @@ def test_delete_profile_removes_yaml_and_output(tmp_path: Path, monkeypatch):
     output.mkdir(parents=True)
     (output / "docker-compose.yaml").write_text("services: {}\n", encoding="utf-8")
 
-    monkeypatch.setattr("local_llm_setup.profiles.store.PROFILES_DIR", profiles)
-    monkeypatch.setattr("local_llm_setup.profiles.store.output_dir_for", lambda name: output.parent / name)
+    monkeypatch.setattr("local_llm_setup.paths.PROFILES_DIR", profiles)
+    monkeypatch.setattr("local_llm_setup.paths.output_dir_for", lambda name: output)
 
     config = _minimal_config("demo", output)
     save_profile(config)
 
-    removed = delete_profile("demo")
+    removed = delete_profile("demo", config=config, remove_output=True, remove_model_cache=True)
     assert not (profiles / "demo.yaml").exists()
     assert not output.exists()
     assert len(removed) == 2
@@ -40,9 +40,9 @@ def test_delete_profile_removes_yaml_and_output(tmp_path: Path, monkeypatch):
 def test_delete_profile_missing_is_noop(tmp_path: Path, monkeypatch):
     profiles = tmp_path / "llm_local" / "profiles"
     profiles.mkdir(parents=True)
-    monkeypatch.setattr("local_llm_setup.profiles.store.PROFILES_DIR", profiles)
+    monkeypatch.setattr("local_llm_setup.paths.PROFILES_DIR", profiles)
     monkeypatch.setattr(
-        "local_llm_setup.profiles.store.output_dir_for",
+        "local_llm_setup.paths.output_dir_for",
         lambda name: tmp_path / "llm_local" / "output" / name,
     )
 

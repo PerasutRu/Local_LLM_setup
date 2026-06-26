@@ -7,7 +7,7 @@ from pathlib import Path
 from local_llm_setup.frameworks import validate_setup
 from local_llm_setup.instances import collect_reserved_ports
 from local_llm_setup.models.config import GeneratedOutput, SetupConfig
-from local_llm_setup.paths import normalize_output_dir
+from local_llm_setup.paths import normalize_output_dir, resolve_model_cache_host_path
 from local_llm_setup.ports import resolve_port_conflicts
 from local_llm_setup.renderers.compose import render_compose, render_env, render_run_commands
 from local_llm_setup.renderers.nginx import render_api_keys_map, render_nginx_conf
@@ -56,6 +56,11 @@ def generate(config: SetupConfig, dry_run: bool = False) -> GeneratedOutput:
     if not dry_run:
         out = Path(config.output_dir)
         out.mkdir(parents=True, exist_ok=True)
+        for fc in config.frameworks:
+            cache_dir = resolve_model_cache_host_path(
+                out, fc.framework.value, fc.model_cache_host_path
+            )
+            cache_dir.mkdir(parents=True, exist_ok=True)
         (out / "docker-compose.yaml").write_text(compose_yaml, encoding="utf-8")
         (out / ".env").write_text(env_file, encoding="utf-8")
         if nginx_conf:

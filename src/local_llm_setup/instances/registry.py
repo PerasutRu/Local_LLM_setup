@@ -130,6 +130,39 @@ def container_names_from_compose(compose_file: Path) -> list[str]:
     return names
 
 
+def images_from_compose(compose_file: Path) -> list[str]:
+    """Return Docker image references from a compose file."""
+    try:
+        data = yaml.safe_load(compose_file.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        return []
+    images: list[str] = []
+    for service in (data.get("services") or {}).values():
+        image = service.get("image")
+        if image:
+            images.append(str(image))
+    return images
+
+
+def docker_image_exists(image: str) -> bool:
+    """Return True when the image is already present on the Docker host."""
+    try:
+        result = subprocess.run(
+            ["docker", "image", "inspect", image],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return False
+    return result.returncode == 0
+
+
+def missing_compose_images(compose_file: Path) -> list[str]:
+    """Images referenced in compose that are not present locally."""
+    return [image for image in images_from_compose(compose_file) if not docker_image_exists(image)]
+
+
 def is_container_running(name: str) -> bool:
     try:
         result = subprocess.run(

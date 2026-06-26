@@ -19,6 +19,7 @@ from local_llm_setup.instances import (
     compose_project_candidates,
     container_names_from_compose,
     list_running_instances,
+    missing_compose_images,
 )
 from local_llm_setup.renderers import normalize_access
 from local_llm_setup.urls import (
@@ -335,6 +336,34 @@ def _wait_for_tunnel_url(
     return None
 
 
+def _ollama_model_installed(
+    compose: list[str],
+    cwd: Path,
+    model_name: str,
+    *,
+    on_output: Callable[[str], None] | None = None,
+) -> bool:
+    """Return True when the model is already available inside the Ollama container."""
+    show_cmd = [*compose, "exec", "-T", "ollama", "ollama", "show", model_name]
+    if on_output:
+        on_output(f"[dim]$ {format_shell_command(show_cmd, cwd=cwd)}[/dim]")
+    try:
+        result = subprocess.run(
+            show_cmd,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return False
+    if result.returncode == 0:
+        if on_output:
+            on_output(f"[dim]  Ollama model already present: {model_name}[/dim]")
+        return True
+    return False
+
+
 def deploy(
     config: SetupConfig,
     *,
@@ -355,23 +384,31 @@ def deploy(
     compose = _compose_cmd(out_dir, config=config)
     steps: list[DeployStep] = []
     ollama_models = [fc.model.name for fc in config.frameworks if fc.framework == Framework.OLLAMA]
-    total = (1 if pull else 0) + 1 + (1 if ollama_models else 0) + len(ollama_models)
+    images_to_pull = missing_compose_images(compose_file) if pull else []
+    total = len(images_to_pull) + 1 + (1 if ollama_models else 0) + len(ollama_models)
     step_no = 0
 
-    if pull:
-        step_no += 1
-        _announce(on_output, on_status, step_no, total, "Pulling Docker images")
-        step = _run(
-            [*compose, "pull"],
-            out_dir,
-            timeout=300,
-            max_timeout=7200,
-            on_output=on_output,
-        )
-        steps.append(step)
-        if not step.ok:
-            _record_run(out_dir, "deploy", steps, on_output)
-            return DeployResult(success=False, steps=steps, error=step.stderr or step.stdout or "docker compose pull failed")
+    if images_to_pull:
+        for image in images_to_pull:
+            step_no += 1
+            _announce(on_output, on_status, step_no, total, f"Pulling Docker image: {image}")
+            step = _run(
+                ["docker", "pull", image],
+                out_dir,
+                timeout=300,
+                max_timeout=7200,
+                on_output=on_output,
+            )
+            steps.append(step)
+            if not step.ok:
+                _record_run(out_dir, "deploy", steps, on_output)
+                return DeployResult(
+                    success=False,
+                    steps=steps,
+                    error=step.stderr or step.stdout or f"docker pull {image} failed",
+                )
+    elif pull and on_output:
+        on_output("[dim]Docker images already on host — skipping pull[/dim]")
 
     step_no += 1
     _announce(on_output, on_status, step_no, total, "Starting containers (docker compose up -d)")
@@ -393,6 +430,8 @@ def deploy(
             )
 
     for model_name in ollama_models:
+        if _ollama_model_installed(compose, out_dir, model_name, on_output=on_output):
+            continue
         step_no += 1
         _announce(on_output, on_status, step_no, total, f"Pulling Ollama model: {model_name}")
         pull_cmd = [*compose, "exec", "-T", "ollama", "ollama", "pull", model_name]
@@ -465,7 +504,7 @@ def stop_stack(
         on_output(f"[#c9a227]stop[/] · {out_dir}")
 
     containers = container_names_from_compose(compose_file)
-    if containers and not any_container_running(containers):
+    if containers and not any_container_running(containers) and not remove_volumes:
         if on_output:
             on_output("[dim]No running containers for this stack.[/dim]")
         return DeployResult(success=True, steps=[])

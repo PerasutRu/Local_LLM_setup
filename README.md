@@ -16,6 +16,9 @@ TUI wizard for hosting local LLMs with **Ollama**, **vLLM**, **llama.cpp**, and 
 - **Multiple isolated stacks** — one profile per instance, output under `llm_local/output/{profile_name}/`, unique Docker project/container names
 - **Cross-instance port allocation** — auto-avoid conflicts for providers (Ollama, vLLM, …), nginx, and Cloudflare tunnel sidecars
 - **Instance management** — list, edit, deploy, stop, and delete profiles (`/instances`, `/delete-profile`, `local-llm-setup instances`)
+- **Per-provider model cache** — bind-mounted `model-{provider}/` folders per profile (custom host path in Quick/Full or YAML)
+- **Smart deploy pulls** — skip `docker pull` and `ollama pull` when images/models are already on the host
+- **Slash command bar** — name-only suggestions, ↑↓ multi-match selection, Enter runs highlighted command; command mode keeps menus visible over deploy logs
 - Access URLs for localhost, **public IP** (auto-detected), private LAN, and Cloudflare tunnel — plus curl smoke tests
 - Save/load/delete YAML profiles
 - One-line server install and uninstall via `curl | bash` ([Hermes-style](https://hermes-agent.nousresearch.com/))
@@ -112,7 +115,7 @@ local-llm-setup instances                     # list profiles + status
 | `doctor` | Check Docker, GPU, CUDA, nginx (`--json` for machine output) |
 | `detect` | Alias for `doctor` |
 | `generate` | Write `llm_local/output/{profile}/` from a profile (`--run` to deploy, `--dry-run` to validate) |
-| `run` | Start a generated stack (`--no-pull` to skip image pull) |
+| `run` | Start a generated stack (`--no-pull` to skip image pull; deploy also skips pulls when images/models are already local) |
 | `stop` | Stop one stack (`--config` profile, `--all` every running instance, `--volumes` remove data) |
 | `instances` | List saved profiles, ports, and running/stopped status (`--json`) |
 | `save` | Save a config as a named profile |
@@ -188,13 +191,25 @@ docker logs local-llm-tunnel 2>&1 | grep trycloudflare   # current tunnel URL
 
 ## TUI slash commands
 
-Press `/` to focus the command bar and insert `/`. The **suggestion panel** stays hidden until the input starts with `/`; then it lists matching commands with descriptions (each command appears once — aliases such as `/profiles` autocomplete to `/instances`). Use **↑↓** to highlight, **Tab** to autocomplete (press Tab again to cycle matches), **Enter** to run. Without a leading `/`, Tab moves focus to the next widget as usual.
+Press `/` to focus the command bar and insert `/`. The **suggestion panel** stays hidden until the input starts with `/`.
+
+**Filtering** — suggestions match **canonical command names** only (not Thai descriptions or aliases). Typing `/p` shows `/providers`, not `/instances`. Aliases such as `/profiles`, `/list`, `/curl`, and `/delete` still **run** on Enter but never appear in the filtered list.
+
+**Keyboard**
+
+| Key | Action |
+|-----|--------|
+| **↑↓** | Move highlight among matches (typed prefix stays — e.g. `/de` keeps all of `/delete-profile`, `/deploy`, `/delete-container` visible) |
+| **Enter** | Run the **highlighted** command (or the typed command when only one match) |
+| **Tab** | Autocomplete by command name (requires at least one typed character after `/`; press Tab again to cycle when several names share a prefix) |
+
+Without a leading `/`, Tab moves focus to the next widget as usual. While the command bar is focused, deploy logs and access URLs shrink/hide so the suggestion list stays readable.
 
 | Command | Action |
 |---------|--------|
 | `/help` | List all commands |
 | `/instances` | List profiles — edit, deploy, or stop per instance (aliases: `/profiles`, `/list`) |
-| `/delete-profile` | Delete saved profile YAML + output folder — multi-select, delete all, or `/delete-profile name …` (alias: `/remove-profile`) |
+| `/delete-profile` | Delete saved profile YAML + deploy artifacts — multi-select, delete all, prompts for Docker volumes and model cache |
 | `/providers` | Switch Ollama / vLLM |
 | `/deploy` | Regenerate and start the current profile's stack |
 | `/test` | Run curl smoke tests (uses compose port + `api_keys.map` when auth is on) |
@@ -215,13 +230,16 @@ llm_local/
 │   └── smollm-2.yaml
 └── output/
     ├── smollm-1/          # docker-compose.yaml, nginx.conf, …
+    │   ├── model-ollama/  # downloaded models (bind-mounted into container)
+    │   └── model-vllm/    # HF cache when using vLLM
     └── smollm-2/
 ```
 
 - **Profile name** → subfolder name → Docker project `local-llm-{profile}` and containers `local-llm-{profile}-ollama`, etc.
+- **Model cache** — each provider gets a dedicated host folder per profile (default: `output/model-{provider}/`). Set a custom path in Full → Runtime or Quick → model step (`model_cache_host_path` in YAML).
 - Ports are reserved across other profiles so two Ollama stacks get `11434` and `11435`, nginx `8080` and `8081`, and so on.
 - Edit a profile via `/instances` → **Edit**, change settings, then **Generate & deploy** or `/deploy` — only that stack restarts.
-- Delete profiles via `/delete-profile` or `/instances` → **Delete profiles…** — **Space** to select multiple, **Enter** to confirm. Running stacks are stopped first; YAML and `llm_local/output/{profile_name}/` are removed. `/delete` removes Docker volumes only (`/delete-container`), not saved configs.
+- Delete profiles via `/delete-profile` or `/instances` → **Delete profiles…** — select profiles, then choose **Docker volumes** and **model cache** removal separately. Deploy files and YAML are always removed; model cache is optional.
 
 ### Deploy log (Pretty + Copy)
 
@@ -269,7 +287,7 @@ Set a custom image in the TUI (Quick: Model step; Full: Runtime step) or in prof
 | Step | Fields |
 |------|--------|
 | Model | `model.name`, `context_length`, `quantization` (vLLM/SGLang), `tensor_parallel`, HF token |
-| Runtime | `profile_name` (→ `llm_local/output/{name}/`), `port`, `bind_host`, `image_tag`, `shm_size`, `extra_env`, `extra_args` |
+| Runtime | `profile_name` (→ `llm_local/output/{name}/`), `port`, `bind_host`, `image_tag`, `model_cache_host_path`, `shm_size`, `extra_env`, `extra_args` |
 | Nginx | `listen_port`, `server_name`, `bind_host`, `client_max_body_size`, `proxy_read_timeout`, CORS, cloudflared tunnel |
 
 Provider-specific extras:
@@ -291,7 +309,8 @@ Full mode maps to real-world `docker compose` setups (e.g. Gemma 4 multimodal wi
 |---------|-----------------|----------------|
 | Host `8002` → container `8000` | `port` = `8000`, `publish_port` = `8002` | `ports: ["0.0.0.0:8002:8000"]` |
 | Pin GPU 0 | `gpu_device_ids` = `0` | `device_ids: ["0"]` + `NVIDIA_VISIBLE_DEVICES` |
-| HF cache volume | `extra_volumes` | `volumes: ["/host:/root/.cache/huggingface"]` |
+| Model cache path | `model_cache_host_path` | Host folder for downloaded models (default: `output/model-{provider}/`) |
+| HF cache volume | `extra_volumes` | Override container mount entirely (advanced; skips default cache mount when same container path) |
 | `ipc: host` | `ipc` = `host` | `ipc: host` |
 | Env vars | `extra_env` | `HF_HOME`, `PYTORCH_CUDA_ALLOC_CONF`, … |
 | Serve flags | vLLM model fields | `entrypoint: [vllm, serve]` + flags |
@@ -367,7 +386,8 @@ local-llm-setup instances
 
 Per profile under `llm_local/output/{profile_name}/`:
 
-- `docker-compose.yaml` — isolated services, healthchecks, GPU reservations
+- `docker-compose.yaml` — isolated services, healthchecks, GPU reservations, model-cache bind mounts
+- `model-{provider}/` — downloaded models (Ollama blobs, Hugging Face cache, etc.) when using the default cache path
 - `.env` — secrets (e.g. `HF_TOKEN`)
 - `nginx.conf` — reverse proxy (if enabled)
 - `api_keys.map` — API key map for nginx (if enabled)

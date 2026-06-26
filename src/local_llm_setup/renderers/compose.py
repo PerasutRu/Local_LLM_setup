@@ -7,7 +7,11 @@ from typing import Any
 import yaml
 
 from local_llm_setup.frameworks import get_plugin
-from local_llm_setup.paths import instance_slug
+from local_llm_setup.paths import (
+    instance_slug,
+    model_cache_bind_mount,
+    model_cache_container_path,
+)
 from local_llm_setup.ports import ollama_host_for_port, split_host_port
 from local_llm_setup.models.config import (
     Framework,
@@ -33,8 +37,29 @@ def _network_name(config: SetupConfig) -> str:
     return f"local-llm-setup-{_instance_slug(config)}-{COMPOSE_NETWORK}"
 
 
-def _ollama_volume_name(config: SetupConfig) -> str:
-    return f"ollama_data_{_instance_slug(config)}"
+def _volume_container_path(volume: str) -> str:
+    """Return the in-container target path from a docker volume mapping."""
+    stripped = volume
+    for suffix in (":ro", ":rw"):
+        if stripped.endswith(suffix):
+            stripped = stripped[: -len(suffix)]
+            break
+    if ":" not in stripped:
+        return ""
+    return stripped.rsplit(":", 1)[1]
+
+
+def _service_volumes(fc: FrameworkConfig, output_dir: Path) -> list[str]:
+    """Default model-cache bind mount plus any user-defined extra volumes."""
+    cache_container = model_cache_container_path(fc.framework.value)
+    if any(_volume_container_path(volume) == cache_container for volume in fc.extra_volumes):
+        return list(fc.extra_volumes)
+
+    volumes = [model_cache_bind_mount(output_dir, fc.framework.value, fc.model_cache_host_path)]
+    for volume in fc.extra_volumes:
+        if volume not in volumes:
+            volumes.append(volume)
+    return volumes
 
 
 def _needs_gpu(fc: FrameworkConfig, host: HostInfo | None) -> bool:
@@ -211,9 +236,10 @@ def _build_service(fc: FrameworkConfig, config: SetupConfig) -> dict[str, Any]:
         env[fc.model.hf_token_env] = "${HF_TOKEN}"
 
     if fc.framework == Framework.OLLAMA:
-        service["volumes"] = [f"{_ollama_volume_name(config)}:/root/.ollama"]
+        service["volumes"] = _service_volumes(fc, config.output_dir)
         # Ollama defaults to 127.0.0.1; bind all interfaces so nginx/other containers can reach it.
         env["OLLAMA_HOST"] = ollama_host_for_port(fc)
+        env.setdefault("OLLAMA_MODELS", model_cache_container_path(fc.framework.value))
         service["healthcheck"]["test"] = [
             "CMD-SHELL",
             (
@@ -221,11 +247,12 @@ def _build_service(fc: FrameworkConfig, config: SetupConfig) -> dict[str, Any]:
                 f" || ollama list >/dev/null 2>&1 || exit 1"
             ),
         ]
+    elif fc.framework in (Framework.VLLM, Framework.SGLANG):
+        service["volumes"] = _service_volumes(fc, config.output_dir)
+        env.setdefault("HF_HOME", model_cache_container_path(fc.framework.value))
     elif fc.framework == Framework.LLAMACPP:
-        service["volumes"] = ["./models:/models:ro"]
+        service["volumes"] = _service_volumes(fc, config.output_dir)
         service["command"] = _build_command(fc)
-    elif fc.framework == Framework.VLLM and fc.extra_volumes:
-        service["volumes"] = list(fc.extra_volumes)
 
     if fc.ipc:
         service["ipc"] = fc.ipc
@@ -275,7 +302,6 @@ def _build_service(fc: FrameworkConfig, config: SetupConfig) -> dict[str, Any]:
 
 def render_compose(config: SetupConfig) -> str:
     services: dict[str, Any] = {}
-    volumes: dict[str, Any] = {}
 
     for fc in config.frameworks:
         services[_service_name(fc)] = _build_service(fc, config)
@@ -313,9 +339,6 @@ def render_compose(config: SetupConfig) -> str:
                 },
             })
 
-    if any(fc.framework == Framework.OLLAMA for fc in config.frameworks):
-        volumes[_ollama_volume_name(config)] = {}
-
     compose: dict[str, Any] = {
         "services": services,
         "networks": {
@@ -325,8 +348,6 @@ def render_compose(config: SetupConfig) -> str:
             },
         },
     }
-    if volumes:
-        compose["volumes"] = volumes
 
     return yaml.dump(compose, default_flow_style=False, sort_keys=False, allow_unicode=True)
 
