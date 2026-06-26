@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from local_llm_setup.frameworks import get_plugin
 from local_llm_setup.models.config import ConfigMode, Framework
 from local_llm_setup.paths import OUTPUT_DIR
 from local_llm_setup.tui.app import WizardState
@@ -84,3 +85,27 @@ def test_field_specs_cover_each_provider() -> None:
     for fw in Framework:
         assert model_fields(fw)[0].id == "model-input"
         assert runtime_fields(fw)[0].id == "port-input"
+        image_field = runtime_fields(fw)[2]
+        assert image_field.id == "image-tag-input"
+        assert image_field.placeholder == get_plugin(fw).meta.default_image
+
+
+def test_quick_mode_custom_docker_image() -> None:
+    state = WizardState(OUTPUT_DIR)
+    state.framework = Framework.OLLAMA
+    state.mode = ConfigMode.QUICK
+    state.model_name = "llama3.2"
+    state.image_tag = "ollama/ollama:0.5.4"
+
+    fc = state.build_config().frameworks[0]
+    assert fc.image_tag == "ollama/ollama:0.5.4"
+
+
+def test_quick_mode_empty_image_uses_host_default() -> None:
+    state = WizardState(OUTPUT_DIR)
+    state.framework = Framework.VLLM
+    state.mode = ConfigMode.QUICK
+    state.model_name = "meta-llama/Meta-Llama-3-8B-Instruct"
+
+    fc = state.build_config().frameworks[0]
+    assert fc.image_tag is None

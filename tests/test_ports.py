@@ -11,8 +11,15 @@ from local_llm_setup.models.config import (
     NginxConfig,
     SetupConfig,
 )
-from local_llm_setup.ports import find_free_port, resolve_port_conflicts, parse_published_port, apply_compose_ports
+from local_llm_setup.ports import (
+    apply_compose_ports,
+    find_free_port,
+    parse_published_port,
+    resolve_port_conflicts,
+)
 from local_llm_setup.renderers import prepare_config
+from local_llm_setup.renderers.compose import render_compose
+from local_llm_setup.renderers.nginx import render_nginx_conf
 
 
 def _ollama_config(*, port: int = 11434, nginx_port: int = 8080, nginx: bool = True) -> SetupConfig:
@@ -42,6 +49,7 @@ def test_resolve_port_bumps_busy_framework_port():
     config = _ollama_config(port=11434, nginx=False)
     config.nginx.enabled = False
     config.frameworks[0].bind_host = "127.0.0.1"
+    config.frameworks[0].extra_env = {"OLLAMA_HOST": "0.0.0.0:11434"}
 
     def fake_free(port: int, host: str = "127.0.0.1") -> bool:
         return port != 11434
@@ -50,7 +58,44 @@ def test_resolve_port_bumps_busy_framework_port():
         resolved, warnings = resolve_port_conflicts(config)
 
     assert resolved.frameworks[0].port == 11435
+    assert resolved.frameworks[0].extra_env["OLLAMA_HOST"] == "0.0.0.0:11435"
     assert any("11434" in w and "11435" in w for w in warnings)
+
+
+def test_resolve_port_keeps_ollama_port_when_nginx_hides_host_mapping():
+    config = _ollama_config(port=11434, nginx_port=8080)
+    config.frameworks[0].extra_env = {"OLLAMA_HOST": "0.0.0.0:11434"}
+
+    def fake_free(port: int, host: str = "0.0.0.0") -> bool:
+        if host == "127.0.0.1" and port == 11434:
+            return False
+        return port != 8080
+
+    with patch("local_llm_setup.ports.is_port_free", side_effect=fake_free):
+        resolved, warnings = resolve_port_conflicts(config)
+
+    assert resolved.frameworks[0].port == 11434
+    assert resolved.frameworks[0].extra_env["OLLAMA_HOST"] == "0.0.0.0:11434"
+    assert resolved.nginx.upstream_port == 11434
+    assert resolved.nginx.listen_port == 8081
+    assert any("nginx" in w.lower() for w in warnings)
+
+
+def test_prepare_config_syncs_ollama_host_into_compose_and_nginx():
+    config = _ollama_config(port=11434, nginx=False)
+    config.frameworks[0].bind_host = "127.0.0.1"
+    config.frameworks[0].extra_env = {"OLLAMA_HOST": "0.0.0.0:11434"}
+
+    def fake_free(port: int, host: str = "127.0.0.1") -> bool:
+        return port != 11434
+
+    with patch("local_llm_setup.ports.is_port_free", side_effect=fake_free):
+        prepared, _ = prepare_config(config)
+
+    compose = render_compose(prepared)
+    nginx = render_nginx_conf(prepared)
+    assert 'OLLAMA_HOST: 0.0.0.0:11435' in compose or "0.0.0.0:11435" in compose
+    assert "server ollama:11435;" in nginx
 
 
 def test_resolve_port_bumps_busy_nginx_port():

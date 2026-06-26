@@ -7,6 +7,7 @@ from typing import Any
 import yaml
 
 from local_llm_setup.frameworks import get_plugin
+from local_llm_setup.ports import ollama_host_for_port
 from local_llm_setup.models.config import (
     Framework,
     FrameworkConfig,
@@ -182,7 +183,7 @@ def _build_service(fc: FrameworkConfig, config: SetupConfig) -> dict[str, Any]:
     if fc.framework == Framework.OLLAMA:
         service["volumes"] = ["ollama_data:/root/.ollama"]
         # Ollama defaults to 127.0.0.1; bind all interfaces so nginx/other containers can reach it.
-        env.setdefault("OLLAMA_HOST", f"0.0.0.0:{fc.port}")
+        env["OLLAMA_HOST"] = ollama_host_for_port(fc)
         service["healthcheck"]["test"] = [
             "CMD-SHELL",
             (

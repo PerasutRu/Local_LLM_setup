@@ -25,6 +25,16 @@ def list_frameworks() -> list[FrameworkPlugin]:
     return list(_PLUGINS.values())
 
 
+def default_docker_image(framework: Framework, host: HostInfo | None = None) -> str:
+    """Return the provider image used when image_tag is not overridden."""
+    return get_plugin(framework).image_for_host(host, None)
+
+
+def resolve_docker_image(framework: Framework, image_tag: str | None, host: HostInfo | None = None) -> str:
+    """Resolve the Docker image name for compose rendering."""
+    return get_plugin(framework).image_for_host(host, image_tag)
+
+
 def validate_setup(framework_configs: list[FrameworkConfig], host: HostInfo | None) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
     ports: dict[int, str] = {}

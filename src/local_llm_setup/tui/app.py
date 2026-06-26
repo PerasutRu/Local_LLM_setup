@@ -18,7 +18,7 @@ from local_llm_setup.tui.styles import linkify_text, style_section
 from textual.worker import Worker, WorkerState
 
 from local_llm_setup.detect import detect_host
-from local_llm_setup.frameworks import get_plugin, list_frameworks, validate_setup
+from local_llm_setup.frameworks import default_docker_image, get_plugin, list_frameworks, validate_setup
 from local_llm_setup.models.config import (
     ApiKeyEntry,
     Capabilities,
@@ -162,6 +162,11 @@ class WizardState:
         self.nginx_port = config.nginx.listen_port
         if config.frameworks:
             self.port = config.frameworks[0].port
+            if self.framework == Framework.OLLAMA:
+                self.ollama_host = config.frameworks[0].extra_env.get(
+                    "OLLAMA_HOST",
+                    f"0.0.0.0:{config.frameworks[0].port}",
+                )
         return config
 
     def build_config(self) -> SetupConfig:
@@ -177,11 +182,11 @@ class WizardState:
             hf_token_env=self.hf_token_env or "HF_TOKEN",
         )
         fc.capabilities = self.capabilities
+        fc.image_tag = self.image_tag or None
 
         if self.mode == ConfigMode.FULL:
             if self.port is not None:
                 fc.port = self.port
-            fc.image_tag = self.image_tag or None
             if self.shm_size:
                 fc.shm_size = self.shm_size
             fc.gpu_count = self.gpu_count
@@ -505,7 +510,12 @@ class LocalLLMSetupApp(App):
         body = self.query_one("#step-body", VerticalScroll)
         body.mount(self._section_label("frameworks · inference backends"))
         for p in list_frameworks():
-            body.mount(self._skill_line(p.meta.framework.value, p.meta.description))
+            body.mount(
+                self._skill_line(
+                    p.meta.framework.value,
+                    f"{p.meta.description} · default image: {p.meta.default_image}",
+                )
+            )
 
         choices = [(p.meta.framework.value, p.meta.display_name) for p in list_frameworks()]
         self._mount_choices(choices, id="framework-choice")
@@ -677,11 +687,23 @@ class LocalLLMSetupApp(App):
             hint = "GGUF path or URL (e.g. /models/model.gguf)"
 
         default = plugin.meta.quick_defaults.get("model", "") if plugin else ""
+        default_image = default_docker_image(fw, self.state.host) if fw else ""
         body.mount(self._section_label("model · name and parameters"))
         body.mount(Static(f"  {hint}", classes="skill-line"))
         inp = Input(value=self.state.model_name or default, placeholder=hint, id="model-input")
         body.mount(inp)
-        self._update_footer("Type model name, then press Enter to continue.", "Enter submit")
+        body.mount(Static(f"  Docker image — default: {default_image}", classes="skill-line"))
+        body.mount(
+            Input(
+                value=self.state.image_tag,
+                placeholder=default_image,
+                id="image-tag-input",
+            )
+        )
+        self._update_footer(
+            "Set model and optional custom Docker image, then press Enter.",
+            "Enter moves to image field · empty image = default",
+        )
         self.call_after_refresh(inp.focus)
 
     def _step_runtime(self) -> None:
@@ -693,11 +715,12 @@ class LocalLLMSetupApp(App):
         mount_fields(body, setup_fields(), self._model_field_values())
         body.mount(self._section_label("runtime · Docker & networking"))
         values = self._model_field_values()
-        for spec in runtime_fields(fw):
+        fields = runtime_fields(fw, self.state.host)
+        for spec in fields:
             if not values.get(spec.id) and spec.default:
                 values[spec.id] = spec.default
-        mount_fields(body, runtime_fields(fw), values)
-        last_id = runtime_fields(fw)[-1].id
+        mount_fields(body, fields, values)
+        last_id = fields[-1].id
         self._update_footer(
             "Tab through fields · Enter on last field to continue.",
             f"last field: {last_id}",
@@ -807,8 +830,14 @@ class LocalLLMSetupApp(App):
                         f"{item.bind_host}:{item.port}",
                     )
                 )
+        resolved_image = default_docker_image(fc.framework, config.host)
+        if fc.image_tag:
+            body.mount(self._skill_line("docker_image", fc.image_tag))
+            if fc.image_tag != resolved_image:
+                body.mount(self._skill_line("docker_image_default", f"provider default: {resolved_image}"))
+        else:
+            body.mount(self._skill_line("docker_image", f"{resolved_image} (default)"))
         if self.state.mode == ConfigMode.FULL:
-            body.mount(self._skill_line("image", fc.image_tag or "(provider default)"))
             body.mount(self._skill_line("shm_size", fc.shm_size))
             if fc.framework in (Framework.VLLM, Framework.SGLANG):
                 body.mount(self._skill_line("gpu_count", str(fc.gpu_count)))
@@ -1133,6 +1162,7 @@ class LocalLLMSetupApp(App):
     @on(ChoiceList.Submitted, "#framework-choice")
     def on_framework(self, event: ChoiceList.Submitted) -> None:
         self.state.framework = Framework(event.selected_ids[0])
+        self.state.image_tag = ""
         self._next()
 
     @on(ChoiceList.Submitted, "#mode-choice")
@@ -1146,13 +1176,25 @@ class LocalLLMSetupApp(App):
             self._sync_model_fields()
             return
         self.state.model_name = event.value.strip()
+        if not self.state.model_name:
+            return
+        try:
+            self.query_one("#image-tag-input", Input).focus()
+        except Exception:
+            self._next()
+
+    @on(Input.Submitted, "#image-tag-input")
+    def on_image_submitted(self, event: Input.Submitted) -> None:
+        if self.step != "model" or self.state.mode == ConfigMode.FULL:
+            return
+        self.state.image_tag = event.value.strip()
         if self.state.model_name:
             self._next()
 
     @on(Input.Submitted)
     def on_full_field_submitted(self, event: Input.Submitted) -> None:
         iid = event.input.id
-        if iid in ("command-input", "model-input"):
+        if iid in ("command-input", "model-input", "image-tag-input"):
             return
         fw = self.state.framework
         if self.step == "model" and self.state.mode == ConfigMode.FULL and fw:
@@ -1161,7 +1203,7 @@ class LocalLLMSetupApp(App):
                 self._next()
         elif self.step == "runtime" and fw:
             self._sync_runtime_fields()
-            if iid == runtime_fields(fw)[-1].id:
+            if iid == runtime_fields(fw, self.state.host)[-1].id:
                 self._next()
 
     @on(ChoiceList.Submitted, "#cap-choice")
@@ -1209,6 +1251,7 @@ class LocalLLMSetupApp(App):
     def on_provider_command(self, event: ChoiceList.Submitted) -> None:
         fw = Framework(event.selected_ids[0])
         self.state.framework = fw
+        self.state.image_tag = ""
         plugin = get_plugin(fw)
         if not self.state.model_name:
             self.state.model_name = plugin.meta.quick_defaults.get("model", "")

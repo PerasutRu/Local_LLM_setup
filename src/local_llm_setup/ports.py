@@ -7,7 +7,7 @@ from pathlib import Path
 import yaml
 
 from local_llm_setup.detect.host import is_port_free
-from local_llm_setup.models.config import Framework, SetupConfig, framework_default_port
+from local_llm_setup.models.config import Framework, FrameworkConfig, SetupConfig, framework_default_port
 
 _BIND_HOSTS = frozenset({"127.0.0.1", "0.0.0.0"})
 
@@ -53,6 +53,60 @@ def _pick_framework_port(
     return new_port, f"Port {current} {reason}; {framework.value} uses {new_port}."
 
 
+def split_host_port(value: str) -> tuple[str | None, int | None]:
+    """Parse ``host:port`` values such as ``0.0.0.0:11434``."""
+    if ":" not in value:
+        return None, None
+    host, port_str = value.rsplit(":", 1)
+    try:
+        return (host or "0.0.0.0"), int(port_str)
+    except ValueError:
+        return None, None
+
+
+def sync_ollama_listen_port(fc: FrameworkConfig, old_port: int) -> None:
+    """Keep OLLAMA_HOST aligned when a framework port is auto-adjusted."""
+    if fc.framework != Framework.OLLAMA or fc.port == old_port:
+        return
+
+    bind = "0.0.0.0"
+    existing = fc.extra_env.get("OLLAMA_HOST")
+    if existing:
+        host, port = split_host_port(existing)
+        if host:
+            bind = host
+        # Respect deliberate custom listen ports in extra_env.
+        if port is not None and port != old_port:
+            return
+    fc.extra_env["OLLAMA_HOST"] = f"{bind}:{fc.port}"
+
+
+def ollama_host_for_port(fc: FrameworkConfig) -> str:
+    """Return OLLAMA_HOST with the bind address from config and fc.port."""
+    bind = "0.0.0.0"
+    existing = fc.extra_env.get("OLLAMA_HOST")
+    if existing:
+        host, _ = split_host_port(existing)
+        if host:
+            bind = host
+    return f"{bind}:{fc.port}"
+
+
+def _bump_internal_port(
+    *,
+    framework: Framework,
+    current: int,
+    reserved: set[int],
+    reason: str,
+) -> tuple[int, str | None]:
+    if current not in reserved:
+        return current, None
+    port = current + 1
+    while port in reserved:
+        port += 1
+    return port, f"Port {current} {reason}; {framework.value} uses {port}."
+
+
 def resolve_port_conflicts(config: SetupConfig) -> tuple[SetupConfig, list[str]]:
     """Assign unique, available host ports for every framework and nginx."""
     warnings: list[str] = []
@@ -60,8 +114,22 @@ def resolve_port_conflicts(config: SetupConfig) -> tuple[SetupConfig, list[str]]
     reserved: set[int] = set()
 
     for fc in config.frameworks:
-        host = _check_host(fc.bind_host)
         old = fc.port
+        if config.nginx.enabled:
+            if old in reserved:
+                fc.port, message = _bump_internal_port(
+                    framework=fc.framework,
+                    current=old,
+                    reserved=reserved,
+                    reason="already used by another framework in this stack",
+                )
+                if message:
+                    warnings.append(message)
+                sync_ollama_listen_port(fc, old)
+            reserved.add(fc.port)
+            continue
+
+        host = _check_host(fc.bind_host)
         if old in reserved:
             reason = "already used by another framework in this stack"
         elif not is_port_free(old, host):
@@ -77,6 +145,8 @@ def resolve_port_conflicts(config: SetupConfig) -> tuple[SetupConfig, list[str]]
             reserved=reserved,
             reason=reason,
         )
+        if fc.port != old:
+            sync_ollama_listen_port(fc, old)
         if message:
             warnings.append(message)
         reserved.add(fc.port)

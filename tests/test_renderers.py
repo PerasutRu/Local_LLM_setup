@@ -22,7 +22,12 @@ def test_render_ollama_compose():
     assert "0.0.0.0:11434" in text
 
 
-def test_render_env_with_token():
+def test_render_compose_uses_custom_docker_image():
+    setup = load_profile(Path("llm_local/profiles/sample.yaml"))
+    setup.frameworks[0].image_tag = "ollama/ollama:0.5.4"
+    text = render_compose(setup)
+    assert "image: ollama/ollama:0.5.4" in text
+    assert "ollama/ollama:latest" not in text
     setup = load_profile(Path("llm_local/profiles/sample.yaml"))
     setup.hf_token = "hf_test_token"
     env = render_env(setup)

@@ -8,6 +8,7 @@ TUI wizard for hosting local LLMs with **Ollama**, **vLLM**, **llama.cpp**, and 
 - Keyboard-driven TUI (↑/↓ navigate, Space select, Enter confirm, `/` slash commands)
 - Deploy log with **Pretty** (colored Rich output) and **Copy mode** (`c` toggle — drag-select, Ctrl+C)
 - Quick or **full** configuration — every model, runtime, Docker, and nginx option per provider
+- **Custom Docker image** per provider (Quick and Full) with default image shown in the wizard — override when a tag is incompatible
 - Model validation (Ollama registry, Hugging Face, GGUF for llama.cpp)
 - Capability flags: vision, audio, tool calling, speculative decoding (MTP)
 - Optional nginx reverse proxy with API key auth (`X-API-Key` or `Authorization: Bearer`) and Cloudflare quick tunnel
@@ -219,10 +220,21 @@ Access URLs printed after deploy use the same styling (gold headings, blue links
 
 | Mode | Best for |
 |------|----------|
-| **Quick** | Fast path with sensible defaults (model name, capabilities, nginx on/off) |
+| **Quick** | Fast path — model name, optional custom Docker image, capabilities, nginx on/off |
 | **Full** | Every settable option — ports, env, volumes, GPU ids, vLLM serve flags, nginx timeouts |
 
-Full mode adds a **Runtime & Docker** step between Model and Capabilities.
+Full mode adds a **Runtime & Docker** step between Model and Capabilities. Both modes let you override the provider Docker image; leave the field empty to use the default shown in the wizard.
+
+### Default Docker images
+
+| Provider | Default image | Notes |
+|----------|---------------|-------|
+| Ollama | `ollama/ollama:latest` | |
+| vLLM | `vllm/vllm-openai:latest` | AMD hosts use `rocm/vllm:latest` automatically |
+| llama.cpp | `ghcr.io/ggerganov/llama.cpp:server` | |
+| SGLang | `lmsysorg/sglang:latest` | |
+
+Set a custom image in the TUI (Quick: Model step; Full: Runtime step) or in profile YAML as `image_tag`. Example: `ollama/ollama:0.5.4` when `latest` is incompatible with your stack.
 
 ### Full mode — common fields (all providers)
 
@@ -236,7 +248,7 @@ Provider-specific extras:
 
 | Provider | Additional Full fields |
 |----------|------------------------|
-| **Ollama** | `OLLAMA_NUM_PARALLEL`, `OLLAMA_MODELS`, `OLLAMA_HOST` (auto-set to `0.0.0.0:<port>` in compose; override in Full mode if needed) |
+| **Ollama** | `OLLAMA_NUM_PARALLEL`, `OLLAMA_MODELS`, `OLLAMA_HOST` (auto-synced to `0.0.0.0:<port>` when ports are auto-adjusted; override in Full mode if needed) |
 | **vLLM** | See [vLLM production config](#vllm-production-config) below |
 | **llama.cpp** | `n_gpu_layers` (→ `--n-gpu-layers`) |
 | **SGLang** | `gpu_count`, same HF/quantization fields as vLLM |
@@ -343,7 +355,7 @@ When nginx is enabled, the framework binds to `127.0.0.1` internally and only ng
 
 **vLLM/SGLang validation errors on Mac** — Use Ollama or llama.cpp on Apple Silicon.
 
-**Port already in use** — Ports are auto-adjusted to the next free port during `generate` (a warning is printed). When running **multiple frameworks** (Ollama + vLLM + …), each service gets its default port (`11434`, `8000`, `8080`, `30000`) or the next free one if that port is taken. `/test` and `ACCESS.md` read the actual port from `docker-compose.yaml`.
+**Port already in use** — Ports are auto-adjusted to the next free port during `generate` (a warning is printed). When **nginx is enabled**, framework ports are internal to Docker only — a host Ollama on `11434` does not force the container to move ports. When **nginx is disabled**, host port conflicts bump the published port and `OLLAMA_HOST` stays in sync. When running **multiple frameworks** (Ollama + vLLM + …), each service gets its default port (`11434`, `8000`, `8080`, `30000`) or the next free one if that port is taken. `/test` and `ACCESS.md` read the actual port from `docker-compose.yaml`.
 
 **Cannot reach the API from outside** — Use the **Cloudflare tunnel** URL (`https://….trycloudflare.com`) or ensure the **public IP** port is allowed in the host firewall and forwarded on the router. Do not use `192.168.x.x` from outside your LAN. The `openai` / `ollama` lines in the TUI follow public IP (or LAN if public IP could not be detected).
 
@@ -351,7 +363,7 @@ When nginx is enabled, the framework binds to `127.0.0.1` internally and only ng
 
 **`401 Unauthorized` on `/api/*` or `/v1/*`** — nginx API key auth is enabled. Pass `X-API-Key` or `Authorization: Bearer` with the key from `llm_local/output/api_keys.map`. OpenAI SDK users set `api_key=` to that value. Regenerate nginx with `/deploy` after upgrading if Bearer auth was added recently.
 
-**`502 Bad Gateway` on `/api/*` while `/health` is ok** — nginx is up but cannot reach the LLM backend. For Ollama, regenerate and redeploy so `docker-compose.yaml` includes `OLLAMA_HOST: 0.0.0.0:11434`. Confirm with `docker exec local-llm-nginx wget -qO- http://ollama:11434/api/tags` and check `docker logs local-llm-ollama` if the container is crashing (RAM/GPU).
+**`502 Bad Gateway` on `/api/*` while `/health` is ok** — nginx is up but cannot reach the LLM backend. Regenerate and redeploy so `docker-compose.yaml` and `nginx.conf` use the same Ollama port (`OLLAMA_HOST: 0.0.0.0:<port>` must match the upstream in `nginx.conf`). Confirm with `docker exec local-llm-nginx wget -qO- http://ollama:11434/api/tags` (replace `11434` with your configured port) and check `docker logs local-llm-ollama` if the container is crashing (RAM/GPU).
 
 **Gated Hugging Face models** — Set `HF_TOKEN` in the wizard or `.env`.
 

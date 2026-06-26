@@ -7,8 +7,9 @@ from dataclasses import dataclass
 from textual.containers import VerticalScroll
 from textual.widgets import Input, Static
 
+from local_llm_setup.frameworks import get_plugin
 from local_llm_setup.markup import style_section
-from local_llm_setup.models.config import Framework
+from local_llm_setup.models.config import Framework, HostInfo
 from local_llm_setup.paths import OUTPUT_DIR
 
 
@@ -168,11 +169,21 @@ def vllm_runtime_fields() -> list[FieldSpec]:
     ]
 
 
-def runtime_fields(framework: Framework) -> list[FieldSpec]:
+def docker_image_field(framework: Framework, host: HostInfo | None = None) -> FieldSpec:
+    default_image = get_plugin(framework).image_for_host(host, None)
+    return FieldSpec(
+        "image-tag-input",
+        "image_tag",
+        placeholder=default_image,
+        hint=f"Custom Docker image (empty = {default_image})",
+    )
+
+
+def runtime_fields(framework: Framework, host: HostInfo | None = None) -> list[FieldSpec]:
     fields = [
         FieldSpec("port-input", "port", hint="Container listen port (e.g. 8000)"),
         FieldSpec("bind-host-input", "bind_host", default="127.0.0.1", hint="Host bind address (127.0.0.1 or 0.0.0.0)"),
-        FieldSpec("image-tag-input", "image_tag", hint="Docker image override (empty = provider default)"),
+        docker_image_field(framework, host),
         FieldSpec("shm-input", "shm_size", default=_default_shm(framework), hint="Docker shm_size"),
         FieldSpec(
             "extra-env-input",
