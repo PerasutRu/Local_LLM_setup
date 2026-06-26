@@ -34,14 +34,16 @@ def format_shell_command(cmd: list[str], *, cwd: Path | None = None) -> str:
 
 def format_steps_summary(steps: list[DeployStep], *, cwd: Path | None = None) -> list[str]:
     """Human-readable summary of executed commands for terminal output."""
+    from local_llm_setup.markup import style_heading
+
     if not steps:
         return []
-    lines = ["", "[bold]Commands executed[/bold]"]
+    lines = ["", style_heading("Commands executed")]
     for index, step in enumerate(steps, start=1):
         mark = "[green]✓[/green]" if step.ok else f"[red]✗ {step.returncode}[/red]"
         lines.append(f"  {mark} [{index}] {step.command}")
     lines.append("")
-    lines.append("[dim]Copy-paste to replay:[/dim]")
+    lines.append(style_heading("Copy-paste to replay"))
     for step in steps:
         argv = shlex.split(step.command)
         lines.append(f"  {format_shell_command(argv, cwd=cwd)}")

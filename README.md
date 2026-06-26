@@ -6,6 +6,7 @@ TUI wizard for hosting local LLMs with **Ollama**, **vLLM**, **llama.cpp**, and 
 
 - Auto-detect OS (Linux, macOS, Windows/WSL), GPU, Docker, CUDA, ROCm, nginx
 - Keyboard-driven TUI (↑/↓ navigate, Space select, Enter confirm, `/` slash commands)
+- Deploy log with **Pretty** (colored Rich output) and **Copy mode** (`c` toggle — drag-select, Ctrl+C)
 - Quick or **full** configuration — every model, runtime, Docker, and nginx option per provider
 - Model validation (Ollama registry, Hugging Face, GGUF for llama.cpp)
 - Capability flags: vision, audio, tool calling, speculative decoding (MTP)
@@ -192,6 +193,27 @@ Press `/` in the wizard to open the command bar:
 | `/doctor` | Jump back to Host Doctor |
 
 Press `s` to stop the running stack from any screen.
+
+### Deploy log (Pretty + Copy)
+
+After `/deploy`, `/test`, or **Stop running Docker stack**, a log panel appears below the wizard steps.
+
+| Mode | What you see |
+|------|----------------|
+| **Pretty** (default) | Colored Rich log — ✓/✗, gold headings, blue underlined URLs |
+| **Copy** | Plain text in a TextArea — drag to select, **Ctrl+C** / **Cmd+C** to copy |
+
+Focus the log panel, then:
+
+| Key | Action |
+|-----|--------|
+| `c` | Toggle Pretty ↔ Copy mode |
+| `v` or `Esc` | Return to Pretty view (from Copy mode) |
+| `Ctrl+C` / `Cmd+C` | Copy selection (Copy mode only) |
+
+A hint line above the log and the footer bar repeat these shortcuts. See [GUIDE.md](GUIDE.md) for the Thai walkthrough.
+
+Access URLs printed after deploy use the same styling (gold headings, blue links) in the TUI and in `ACCESS.md`.
 
 ## Configuration modes
 

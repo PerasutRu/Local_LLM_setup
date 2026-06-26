@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from ipaddress import ip_address
 from pathlib import Path
 
+from local_llm_setup.markup import DIM, END, style_heading, style_url
 from local_llm_setup.models.config import Framework, SetupConfig
 
 _PUBLIC_IP_SERVICES = (
@@ -313,50 +314,55 @@ def build_access_urls(config: SetupConfig) -> AccessUrls:
 
 
 def format_access_lines(urls: AccessUrls, *, markup: bool = True) -> list[str]:
-    bold = "[bold #c9a227]" if markup else ""
-    bold_end = "[/]" if markup else ""
-    dim = "[dim]" if markup else ""
-    dim_end = "[/]" if markup else ""
-
-    lines = ["", f"{bold}Access URLs{bold_end}"]
-    lines.append(f"  local:   {urls.local_url}")
+    lines = ["", style_heading("Access URLs", markup=markup)]
+    lines.append(f"  local:   {style_url(urls.local_url, markup=markup)}")
     if urls.lan_urls:
         network_label = "public IP" if urls.uses_public_ip else "LAN"
         for external in urls.lan_urls:
-            lines.append(f"  {network_label}:  {external}")
+            lines.append(f"  {network_label}:  {style_url(external, markup=markup)}")
     elif urls.external:
-        lines.append(f"  {dim}public IP: unavailable (could not detect IP){dim_end}")
+        lines.append(f"  {DIM}public IP: unavailable (could not detect IP){END}")
     elif not urls.external:
-        lines.append(f"  {dim}LAN: not exposed (bind 127.0.0.1 only){dim_end}")
+        lines.append(f"  {DIM}LAN: not exposed (bind 127.0.0.1 only){END}")
 
     if urls.private_lan_url:
-        lines.append(f"  LAN:     {urls.private_lan_url}  [dim](WiFi เดียวกัน)[/dim]")
+        lines.append(
+            f"  LAN:     {style_url(urls.private_lan_url, markup=markup)}  {DIM}(WiFi เดียวกัน){END}"
+        )
 
     if urls.tunnel_url:
-        lines.append(f"  {bold}public:{bold_end}  {urls.tunnel_url}  [dim](เข้าจากอินเทอร์เน็ต นอก LAN)[/dim]")
+        lines.append(
+            f"  {style_heading('public', markup=markup)}:  "
+            f"{style_url(urls.tunnel_url, markup=markup)}  {DIM}(เข้าจากอินเทอร์เน็ต นอก LAN){END}"
+        )
         if urls.tunnel_openai_base_url:
-            lines.append(f"  public openai: {urls.tunnel_openai_base_url}")
+            lines.append(f"  public openai: {style_url(urls.tunnel_openai_base_url, markup=markup)}")
 
     if urls.health_url:
-        lines.append(f"  health:  {urls.health_url}")
+        lines.append(f"  health:  {style_url(urls.health_url, markup=markup)}")
 
     if urls.openai_base_url:
         lines.append(
-            f"  openai:  {urls.openai_base_url}  "
-            f"[dim](OpenAI client — api_key = Bearer token · ไม่ต้องต่อ /models)[/dim]"
+            f"  openai:  {style_url(urls.openai_base_url, markup=markup)}  "
+            f"{DIM}(OpenAI client — api_key = Bearer token · ไม่ต้องต่อ /models){END}"
         )
     if urls.ollama_base_url:
-        lines.append(f"  ollama:  {urls.ollama_base_url}  [dim](base URL สำหรับ Ollama API)[/dim]")
+        lines.append(
+            f"  ollama:  {style_url(urls.ollama_base_url, markup=markup)}  "
+            f"{DIM}(base URL สำหรับ Ollama API){END}"
+        )
 
     if urls.direct_local_url and urls.lan_urls:
-        lines.append(f"  {dim}direct (bypass nginx): {urls.direct_local_url}{dim_end}")
+        lines.append(
+            f"  {DIM}direct (bypass nginx): {style_url(urls.direct_local_url, markup=markup)}{END}"
+        )
 
     if len(urls.service_urls) > 1:
-        lines.append(f"  {bold}services:{bold_end}")
+        lines.append(f"  {style_heading('services', markup=markup)}:")
         for name, url in urls.service_urls:
-            lines.append(f"    {name}: {url}")
+            lines.append(f"    {name}: {style_url(url, markup=markup)}")
 
-    lines.append(f"  {dim}{urls.api_hint}{dim_end}")
+    lines.append(f"  {DIM}{urls.api_hint}{END}")
     if urls.test_commands:
         if urls.uses_public_ip:
             label = "test curl (public IP):"
@@ -364,24 +370,24 @@ def format_access_lines(urls: AccessUrls, *, markup: bool = True) -> list[str]:
             label = "test curl (LAN IP):"
         else:
             label = "test curl:"
-        lines.append(f"  {dim}{label}{dim_end}")
+        lines.append(f"  {DIM}{label}{END}")
         for cmd in urls.test_commands:
-            lines.append(f"    {dim}{cmd}{dim_end}")
+            lines.append(f"    {DIM}{cmd}{END}")
     if urls.tunnel_test_commands:
-        lines.append(f"  {dim}test curl (public tunnel):{dim_end}")
+        lines.append(f"  {DIM}test curl (public tunnel):{END}")
         for cmd in urls.tunnel_test_commands:
-            lines.append(f"    {dim}{cmd}{dim_end}")
+            lines.append(f"    {DIM}{cmd}{END}")
     if urls.external and urls.lan_urls:
         if urls.uses_public_ip:
             lines.append(
-                f"  {dim}public IP: ต้องเปิด firewall ให้ port นี้ · "
+                f"  {DIM}public IP: ต้องเปิด firewall ให้ port นี้ · "
                 f"ถ้า server อยู่หลัง router ต้องตั้ง port forward · "
-                f"หรือใช้ Cloudflare tunnel URL ด้านบน{dim_end}"
+                f"หรือใช้ Cloudflare tunnel URL ด้านบน{END}"
             )
         else:
             lines.append(
-                f"  {dim}LAN: same WiFi only · ถ้าเข้าไม่ได้ เปิด firewall ให้ Docker "
-                f"· ใช้ Cloudflare tunnel URL สำหรับนอก LAN{dim_end}"
+                f"  {DIM}LAN: same WiFi only · ถ้าเข้าไม่ได้ เปิด firewall ให้ Docker "
+                f"· ใช้ Cloudflare tunnel URL สำหรับนอก LAN{END}"
             )
     return lines
 

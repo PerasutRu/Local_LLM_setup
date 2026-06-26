@@ -11,7 +11,10 @@ from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
-from textual.widgets import Input, RichLog, Static
+from textual.widgets import Input, Static
+
+from local_llm_setup.tui.widgets import CopyableRichLog, LOG_FOOTER_HINT
+from local_llm_setup.tui.styles import linkify_text, style_section
 from textual.worker import Worker, WorkerState
 
 from local_llm_setup.detect import detect_host
@@ -299,7 +302,7 @@ class LocalLLMSetupApp(App):
         self._step_idx = 0
         self._active_choices: ChoiceList | None = None
         self._session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self._deploy_log: RichLog | None = None
+        self._deploy_log: CopyableRichLog | None = None
         self._deploy_succeeded = False
         self._remove_volumes_on_stop = False
         self._command_aliases = {
@@ -362,7 +365,7 @@ class LocalLLMSetupApp(App):
 
     def _update_footer(self, welcome: str, hint: str) -> None:
         step_name = STEP_TITLES.get(self.step, self.step)
-        self.query_one("#welcome", Static).update(welcome)
+        self.query_one("#welcome", Static).update(linkify_text(welcome))
         self.query_one("#status-bar", Static).update(
             f"⚡ [#c9a227]{step_name}[/] · step {self._step_idx + 1}/{len(self._wizard_steps())} "
             f"[{self._progress_bar()}]"
@@ -370,7 +373,7 @@ class LocalLLMSetupApp(App):
         self.query_one("#hint-bar", Static).update(hint)
 
     def _set_step_title(self, title: str) -> None:
-        self.query_one("#step-title", Static).update(title)
+        self.query_one("#step-title", Static).update(style_section(title))
 
     def _clear_step(self) -> None:
         self.query_one("#step-body", VerticalScroll).remove_children()
@@ -384,6 +387,9 @@ class LocalLLMSetupApp(App):
         self._active_choices = cl
         self.call_after_refresh(cl.focus)
         return cl
+
+    def _section_label(self, text: str) -> Static:
+        return Static(style_section(text), classes="section-label")
 
     def _skill_line(self, key: str, val: str) -> Static:
         return Static(f"[#c9a227]{key}:[/] {val}", classes="skill-line")
@@ -463,7 +469,7 @@ class LocalLLMSetupApp(App):
 
     def _step_doctor(self) -> None:
         body = self.query_one("#step-body", VerticalScroll)
-        body.mount(Static("Doctor checks · Docker, GPU, CUDA, nginx", classes="section-label"))
+        body.mount(self._section_label("Doctor checks · Docker, GPU, CUDA, nginx"))
 
         host = self.state.host
         body.mount(self._skill_line("os", f"{host.os_type.value} {host.arch}"))
@@ -496,7 +502,7 @@ class LocalLLMSetupApp(App):
 
     def _step_framework(self) -> None:
         body = self.query_one("#step-body", VerticalScroll)
-        body.mount(Static("frameworks · inference backends", classes="section-label"))
+        body.mount(self._section_label("frameworks · inference backends"))
         for p in list_frameworks():
             body.mount(self._skill_line(p.meta.framework.value, p.meta.description))
 
@@ -506,7 +512,7 @@ class LocalLLMSetupApp(App):
 
     def _step_mode(self) -> None:
         body = self.query_one("#step-body", VerticalScroll)
-        body.mount(Static("config · setup depth", classes="section-label"))
+        body.mount(self._section_label("config · setup depth"))
         body.mount(self._skill_line("quick", "Sensible defaults — fastest path"))
         body.mount(self._skill_line("full", "Every option — model, runtime, Docker, nginx"))
 
@@ -653,7 +659,7 @@ class LocalLLMSetupApp(App):
         plugin = get_plugin(fw) if fw else None
 
         if self.state.mode == ConfigMode.FULL and fw:
-            body.mount(Static("model · name and parameters", classes="section-label"))
+            body.mount(self._section_label("model · name and parameters"))
             mount_fields(body, model_fields(fw), self._model_field_values())
             last_id = model_fields(fw)[-1].id
             self._update_footer(
@@ -670,7 +676,7 @@ class LocalLLMSetupApp(App):
             hint = "GGUF path or URL (e.g. /models/model.gguf)"
 
         default = plugin.meta.quick_defaults.get("model", "") if plugin else ""
-        body.mount(Static("model · name and parameters", classes="section-label"))
+        body.mount(self._section_label("model · name and parameters"))
         body.mount(Static(f"  {hint}", classes="skill-line"))
         inp = Input(value=self.state.model_name or default, placeholder=hint, id="model-input")
         body.mount(inp)
@@ -682,9 +688,9 @@ class LocalLLMSetupApp(App):
         fw = self.state.framework
         if not fw:
             return
-        body.mount(Static("setup · profile and output", classes="section-label"))
+        body.mount(self._section_label("setup · profile and output"))
         mount_fields(body, setup_fields(), self._model_field_values())
-        body.mount(Static("runtime · Docker & networking", classes="section-label"))
+        body.mount(self._section_label("runtime · Docker & networking"))
         values = self._model_field_values()
         for spec in runtime_fields(fw):
             if not values.get(spec.id) and spec.default:
@@ -701,7 +707,7 @@ class LocalLLMSetupApp(App):
         body = self.query_one("#step-body", VerticalScroll)
         fw = self.state.framework
         plugin = get_plugin(fw) if fw else None
-        body.mount(Static("capabilities · model features", classes="section-label"))
+        body.mount(self._section_label("capabilities · model features"))
 
         opts: list[tuple[str, str]] = [("text", "Text generation (always on)")]
         if plugin:
@@ -720,7 +726,7 @@ class LocalLLMSetupApp(App):
             body.mount(self._skill_line(cid, label))
 
         if plugin and plugin.meta.supports_mtp:
-            body.mount(Static("mtp_drafter: (if MTP enabled)", classes="section-label"))
+            body.mount(self._section_label("mtp_drafter: (if MTP enabled)"))
             body.mount(Input(placeholder="org/drafter-model", id="drafter-input"))
 
         self._mount_choices(opts, multi=True, id="cap-choice")
@@ -728,7 +734,7 @@ class LocalLLMSetupApp(App):
 
     def _step_nginx(self) -> None:
         body = self.query_one("#step-body", VerticalScroll)
-        body.mount(Static("nginx · reverse proxy", classes="section-label"))
+        body.mount(self._section_label("nginx · reverse proxy"))
         body.mount(self._skill_line("no", "Direct to framework port"))
         body.mount(self._skill_line("yes_nokey", "nginx.conf without API keys"))
         body.mount(self._skill_line("yes_key", "nginx.conf + api_keys.map"))
@@ -758,7 +764,7 @@ class LocalLLMSetupApp(App):
 
             self.call_after_refresh(_preset_nginx_extra)
         else:
-            body.mount(Static("listen_port:", classes="section-label"))
+            body.mount(self._section_label("listen_port:"))
             body.mount(Input(value=str(self.state.nginx_port), id="nginx-port"))
 
         self._mount_choices(
@@ -777,7 +783,7 @@ class LocalLLMSetupApp(App):
             config = self.state.to_config()
             issues = validate_setup(config.frameworks, config.host)
         except ValueError as exc:
-            body.mount(Static(f"[red]Config error: {exc}[/red]"))
+            body.mount(Static(f"[red]Config error: {exc}[/red]", classes="skill-line"))
             self._update_footer("Fix errors and press Esc to go back.", "")
             return
 
@@ -876,10 +882,8 @@ class LocalLLMSetupApp(App):
                 body.mount(Static(f"  [yellow]warn:[/yellow] {w}", classes="skill-line"))
 
             if self.state.auto_run:
-                body.mount(Static("deploy · docker compose", classes="section-label"))
-                deploy_log = RichLog(highlight=True, markup=True, id="deploy-log", wrap=True)
-                body.mount(deploy_log)
-                self._deploy_log = deploy_log
+                body.mount(self._section_label("deploy · docker compose"))
+                self._mount_deploy_log(body)
                 self._update_footer("Starting Docker containers...", "please wait")
                 self.run_worker(
                     partial(self._do_deploy, config),
@@ -888,18 +892,18 @@ class LocalLLMSetupApp(App):
                     exclusive=True,
                 )
             else:
-                body.mount(Static("run:", classes="section-label"))
+                body.mount(self._section_label("run:"))
                 for cmd in result.run_commands:
                     body.mount(Static(f"  {cmd}", classes="skill-line"))
                 urls = build_access_urls(config)
-                body.mount(Static("access:", classes="section-label"))
-                for line in format_access_lines(urls, markup=False):
+                body.mount(self._section_label("access:"))
+                for line in format_access_lines(urls, markup=True):
                     if line.strip():
-                        body.mount(Static(f"  {line.strip()}", classes="skill-line"))
-                self._update_footer(f"Ready · {urls.primary_url}", "s stop · /test · /delete-container · q quit")
+                        body.mount(Static(line.strip(), classes="access-line"))
+                self._update_footer(f"Ready · {urls.primary_url}", LOG_FOOTER_HINT)
 
             if result.api_keys_map and config.nginx.api_keys:
-                body.mount(Static("api_keys:", classes="section-label"))
+                body.mount(self._section_label("api_keys:"))
                 for k in config.nginx.api_keys:
                     body.mount(Static(f"  {k.key}  ({k.label})", classes="skill-line"))
         except Exception as exc:
@@ -952,14 +956,19 @@ class LocalLLMSetupApp(App):
 
         return run_curl_tests(config, on_output=on_output, on_status=on_status)
 
-    def _ensure_deploy_log(self) -> RichLog:
+    def _mount_deploy_log(self, body: VerticalScroll) -> CopyableRichLog:
+        log = CopyableRichLog(id="deploy-log")
+        panel = Container(id="log-panel")
+        body.mount(panel)
+        panel.mount(log)
+        self._deploy_log = log
+        return log
+
+    def _ensure_deploy_log(self) -> CopyableRichLog:
         if self._deploy_log is not None:
             return self._deploy_log
         body = self.query_one("#step-body", VerticalScroll)
-        deploy_log = RichLog(highlight=True, markup=True, id="deploy-log", wrap=True)
-        body.mount(deploy_log)
-        self._deploy_log = deploy_log
-        return deploy_log
+        return self._mount_deploy_log(body)
 
     def _write_command_output(self, lines: list[str]) -> None:
         log = self._ensure_deploy_log()
@@ -1041,10 +1050,8 @@ class LocalLLMSetupApp(App):
                 return
             body = self.query_one("#step-body", VerticalScroll)
             body.remove_children()
-            body.mount(Static("deploy · docker compose", classes="section-label"))
-            deploy_log = RichLog(highlight=True, markup=True, id="deploy-log", wrap=True)
-            body.mount(deploy_log)
-            self._deploy_log = deploy_log
+            body.mount(self._section_label("deploy · docker compose"))
+            self._mount_deploy_log(body)
             self._deploy_succeeded = False
             self._update_footer("Starting Docker containers...", "please wait")
             self.run_worker(partial(self._do_deploy, config), name="deploy", thread=True, exclusive=True)
@@ -1058,10 +1065,8 @@ class LocalLLMSetupApp(App):
         self._active_choices = None
         body = self.query_one("#step-body", VerticalScroll)
         body.remove_children()
-        body.mount(Static(label, classes="section-label"))
-        deploy_log = RichLog(highlight=True, markup=True, id="deploy-log", wrap=True)
-        body.mount(deploy_log)
-        self._deploy_log = deploy_log
+        body.mount(self._section_label(label))
+        self._mount_deploy_log(body)
         self._deploy_succeeded = False
         self._update_footer("Stopping Docker stack...", "please wait")
         self.run_worker(self._do_stop, name="stop", thread=True, exclusive=True)
@@ -1082,10 +1087,15 @@ class LocalLLMSetupApp(App):
             return
         result: DeployResult = event.worker.result
         if event.worker.name == "curl-test":
+            if self._deploy_log is not None:
+                self._deploy_log.focus()
             if result.success:
-                self._update_footer("Curl tests passed.", "s stop · /test · q quit")
+                self._update_footer("Curl tests passed.", LOG_FOOTER_HINT)
             else:
-                self._update_footer(f"Curl test failed: {result.error or 'unknown error'}", "/test · q quit")
+                self._update_footer(
+                    f"Curl test failed: {result.error or 'unknown error'}",
+                    "c copy mode · drag select · Ctrl+C · v/Esc pretty",
+                )
             return
         if event.worker.name == "stop":
             if result.success:
@@ -1102,7 +1112,7 @@ class LocalLLMSetupApp(App):
             self._deploy_succeeded = True
             urls = result.access_urls
             footer = urls.primary_url if urls else "Docker stack is running!"
-            self._update_footer(f"Running · {footer}", "s stop · /test · /delete-container · q quit")
+            self._update_footer(f"Running · {footer}", LOG_FOOTER_HINT)
             self._deploy_log.write("\n[bold green]✓ Deploy complete[/bold green]")
             if urls:
                 for line in format_access_lines(urls):

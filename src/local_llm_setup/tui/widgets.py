@@ -2,12 +2,188 @@
 
 from __future__ import annotations
 
+from rich.errors import MarkupError
+from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.dom import DOMNode
 from textual.message import Message
+from textual.reactive import reactive
 from textual.widget import Widget
-from textual.widgets import Static
+from textual.widgets import RichLog, Static, TextArea
+
+
+def _plain_markup(line: str) -> str:
+    if "[" not in line:
+        return line
+    try:
+        return Text.from_markup(line).plain
+    except MarkupError:
+        return line
+
+
+LOG_HINT_PRETTY = (
+    "[dim]โหมดสี (Pretty)[/] · log แสดงสีและ link · "
+    "กด [bold #ffe566]c[/] → [bold #79c0ff]Copy mode[/] "
+    "(ลากเลือกข้อความ · [bold]Ctrl+C[/bold] / [bold]Cmd+C[/bold] copy)"
+)
+LOG_HINT_COPY = (
+    "[bold #79c0ff]Copy mode[/] · ลากเลือกข้อความ · "
+    "[bold]Ctrl+C[/bold] / [bold]Cmd+C[/bold] copy · "
+    "กด [bold #ffe566]v[/] หรือ [bold]Esc[/] → กลับโหมดสี"
+)
+LOG_FOOTER_HINT = "c copy mode · v/Esc pretty · s stop · /test · q quit"
+
+
+class CopyableRichLog(Widget):
+    """Colored Rich log with a toggleable plain-text copy mode."""
+
+    DEFAULT_CSS = """
+    CopyableRichLog {
+        layout: vertical;
+        height: 100%;
+        min-height: 24;
+    }
+
+    CopyableRichLog #log-hint {
+        height: auto;
+        color: #888888;
+        padding: 0 0 1 0;
+    }
+
+    CopyableRichLog RichLog {
+        height: 1fr;
+        min-height: 20;
+        border: solid #333333;
+        background: #0d0d0d;
+        padding: 0 1;
+    }
+
+    CopyableRichLog TextArea {
+        height: 1fr;
+        min-height: 20;
+        border: solid #79c0ff;
+        background: #0d0d0d;
+        display: none;
+    }
+
+    CopyableRichLog.-copy-mode RichLog {
+        display: none;
+    }
+
+    CopyableRichLog.-copy-mode TextArea {
+        display: block;
+    }
+    """
+
+    BINDINGS = [
+        Binding("c", "toggle_copy_mode", "Copy mode", show=True),
+        Binding("v", "show_pretty_mode", "Pretty view", show=False),
+        Binding("escape", "show_pretty_mode", "Pretty view", show=False),
+    ]
+
+    copy_mode: reactive[bool] = reactive(False)
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._plain_lines: list[str] = []
+        self._pending_rich_lines: list[str] = []
+
+    def compose(self) -> ComposeResult:
+        yield Static(LOG_HINT_PRETTY, id="log-hint")
+        yield RichLog(highlight=True, markup=True, wrap=True, id="rich-log")
+        yield TextArea(
+            read_only=True,
+            show_cursor=False,
+            show_line_numbers=False,
+            soft_wrap=True,
+            tab_behavior="indent",
+            id="copy-log",
+        )
+
+    def on_mount(self) -> None:
+        self.can_focus = True
+        self._update_mode_hint()
+        rich_log = self.query_one("#rich-log", RichLog)
+        for line in self._pending_rich_lines:
+            rich_log.write(line)
+        self._pending_rich_lines.clear()
+        if self.copy_mode:
+            self._sync_copy_view()
+
+    def write(self, line: str) -> None:
+        self._plain_lines.append(_plain_markup(line))
+        if self.is_attached:
+            self.query_one("#rich-log", RichLog).write(line)
+            if self.copy_mode:
+                self._sync_copy_view()
+        else:
+            self._pending_rich_lines.append(line)
+
+    def scroll_end(self, *, animate: bool = False) -> None:
+        if not self.is_attached:
+            return
+        self._active_log().scroll_end(animate=animate)
+
+    def clear_log(self) -> None:
+        self._plain_lines.clear()
+        self._pending_rich_lines.clear()
+        if self.is_attached:
+            self.query_one("#rich-log", RichLog).clear()
+            if self.copy_mode:
+                self._sync_copy_view()
+
+    def plain_text(self) -> str:
+        return "\n".join(self._plain_lines)
+
+    def _active_log(self) -> RichLog | TextArea:
+        if self.copy_mode:
+            return self.query_one("#copy-log", TextArea)
+        return self.query_one("#rich-log", RichLog)
+
+    def _sync_copy_view(self) -> None:
+        if not self.is_attached:
+            return
+        copy_log = self.query_one("#copy-log", TextArea)
+        copy_log.load_text(self.plain_text())
+        copy_log.scroll_end(animate=False)
+
+    def _update_mode_hint(self) -> None:
+        if not self.is_attached:
+            return
+        hint = LOG_HINT_COPY if self.copy_mode else LOG_HINT_PRETTY
+        self.query_one("#log-hint", Static).update(hint)
+
+    def _watch_copy_mode(self, copy_mode: bool) -> None:
+        self.set_class(copy_mode, "-copy-mode")
+        self._update_mode_hint()
+        if not self.is_attached:
+            return
+        if copy_mode:
+            self._sync_copy_view()
+            self.query_one("#copy-log", TextArea).focus()
+            self.app.notify("Copy mode — ลากเลือกข้อความ แล้ว Ctrl+C / Cmd+C", timeout=3)
+        else:
+            self.query_one("#rich-log", RichLog).focus()
+            self.app.notify("Pretty view — แสดง log แบบมีสี", timeout=2)
+
+    def action_toggle_copy_mode(self) -> None:
+        self.copy_mode = not self.copy_mode
+
+    def action_show_pretty_mode(self) -> None:
+        if self.copy_mode:
+            self.copy_mode = False
+
+    def action_copy_all(self) -> None:
+        text = self.plain_text()
+        if not text:
+            return
+        self.app.copy_to_clipboard(text)
+        self.app.notify("Copied log to clipboard", timeout=2)
+
+
+# Backward-compatible alias for imports/tests.
+OutputLog = CopyableRichLog
 
 
 class ChoiceItem(Static):

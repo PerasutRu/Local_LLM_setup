@@ -112,6 +112,25 @@ python -m local_llm_setup tui
 | `Esc` | ย้อนกลับขั้นก่อนหน้า |
 | `q` | ออกจากโปรแกรม |
 
+### Log panel (deploy / stop / `/test`)
+
+หลัง deploy หรือรัน `/test` จะมี **log panel** ด้านล่าง:
+
+| โหมด | คำอธิบาย |
+|------|----------|
+| **Pretty (ค่าเริ่มต้น)** | แสดง log แบบมีสี — ✓/✗, link สีฟ้า, หัวข้อสีทอง |
+| **Copy mode** | ข้อความธรรมดา ลากเลือกแล้ว copy ได้ง่าย |
+
+| ปุ่ม (เมื่อ focus ที่ log) | การทำงาน |
+|----------------------------|----------|
+| `c` | สลับ Pretty ↔ Copy mode |
+| `v` หรือ `Esc` | กลับ Pretty view (จาก Copy mode) |
+| `Ctrl+C` / `Cmd+C` | copy ข้อความที่เลือก (ใน Copy mode) |
+
+ข้อความช่วยเหลือจะแสดง **เหนือ log** และใน **แถบ footer** ด้านล่าง
+
+Slash commands ที่ใช้บ่อย: `/deploy` `/test` `/stop` `/help`
+
 ### ลำดับขั้นตอนใน Wizard
 
 1. **Doctor** — ตรวจ OS, GPU, Docker, CUDA, nginx

@@ -49,10 +49,12 @@ Screen {
 }
 
 #step-title {
-    color: #c9a227;
+    color: #ffe566;
     text-style: bold;
     height: auto;
     margin: 1 0;
+    padding-bottom: 1;
+    border-bottom: solid #333333;
 }
 
 #step-body {
@@ -62,10 +64,26 @@ Screen {
 }
 
 .section-label {
-    color: #c9a227;
+    color: #ffe566;
     text-style: bold;
+    background: #141200;
+    padding: 0 1;
     margin: 1 0 0 0;
     height: auto;
+}
+
+.access-line {
+    height: auto;
+    margin: 0;
+    padding: 0 0 0 1;
+}
+
+.access-line-url {
+    height: auto;
+    margin: 0;
+    padding: 0 0 0 1;
+    color: #79c0ff;
+    text-style: bold underline;
 }
 
 .skill-line {
@@ -163,11 +181,15 @@ Input:focus {
     background: transparent;
 }
 
-#deploy-log {
-    height: 12;
-    border: solid #333333;
+#log-panel {
+    height: 32;
+    min-height: 24;
     margin-top: 1;
-    padding: 0 1;
+}
+
+#deploy-log {
+    height: 100%;
+    min-height: 24;
 }
 
 #command-input {

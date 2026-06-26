@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from textual.containers import VerticalScroll
 from textual.widgets import Input, Static
 
+from local_llm_setup.markup import style_section
 from local_llm_setup.models.config import Framework
 
 
@@ -268,7 +269,7 @@ def _default_shm(framework: Framework) -> str:
 
 def mount_fields(body: VerticalScroll, fields: list[FieldSpec], values: dict[str, str]) -> None:
     for spec in fields:
-        body.mount(Static(spec.label + ":", classes="section-label"))
+        body.mount(Static(style_section(spec.label + ":"), classes="section-label"))
         if spec.hint:
             body.mount(Static(f"  {spec.hint}", classes="skill-line"))
         body.mount(
