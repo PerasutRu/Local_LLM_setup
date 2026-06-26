@@ -188,7 +188,7 @@ docker logs local-llm-tunnel 2>&1 | grep trycloudflare   # current tunnel URL
 
 ## TUI slash commands
 
-Press `/` in the wizard to open the command bar. While typing, a **suggestion panel** lists matching commands with descriptions; use **↑↓** to highlight, **Tab** to autocomplete, **Enter** to run.
+Press `/` to focus the command bar and insert `/`. The **suggestion panel** stays hidden until the input starts with `/`; then it lists matching commands with descriptions. Use **↑↓** to highlight, **Tab** to autocomplete (press Tab again to cycle matches), **Enter** to run. Without a leading `/`, Tab moves focus to the next widget as usual.
 
 | Command | Action |
 |---------|--------|

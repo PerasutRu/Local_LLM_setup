@@ -21,6 +21,12 @@ def test_match_commands_filters():
     assert "stop" in names
 
 
+def test_match_commands_hidden_without_slash():
+    assert match_commands("") == []
+    assert match_commands("help") == []
+    assert match_commands("/") != []
+
+
 def test_format_suggestions_includes_description():
     lines = format_suggestions("/stop", selected=0)
     text = "\n".join(lines)

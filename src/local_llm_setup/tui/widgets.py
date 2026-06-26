@@ -7,10 +7,11 @@ from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.dom import DOMNode
+from textual.events import Focus
 from textual.message import Message
 from textual.reactive import reactive
 from textual.widget import Widget
-from textual.widgets import RichLog, Static, TextArea
+from textual.widgets import Input, RichLog, Static, TextArea
 
 
 def _plain_markup(line: str) -> str:
@@ -327,3 +328,36 @@ class ChoiceList(Widget):
         for item in self._items:
             item.checked = item.choice_id in choice_ids
             item.refresh()
+
+
+class CommandInput(Input):
+    """Command bar input with Tab autocomplete for slash commands."""
+
+    class Autocomplete(Message):
+        """Request slash command autocomplete."""
+
+        def __init__(self, input_widget: CommandInput) -> None:
+            self.input_widget = input_widget
+            super().__init__()
+
+    class Focused(Message):
+        """Command input received focus."""
+
+        def __init__(self, input_widget: CommandInput) -> None:
+            self.input_widget = input_widget
+            super().__init__()
+
+    BINDINGS = [
+        Binding("tab", "request_autocomplete", "Autocomplete", show=False),
+    ]
+
+    def _on_focus(self, event: Focus) -> None:
+        super()._on_focus(event)
+        self.post_message(CommandInput.Focused(self))
+
+    def action_request_autocomplete(self) -> None:
+        if self.value.strip().startswith("/"):
+            self.post_message(CommandInput.Autocomplete(self))
+            return
+        if self.app is not None:
+            self.app.action_focus_next()

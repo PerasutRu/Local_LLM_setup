@@ -13,7 +13,7 @@ from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.widgets import Input, Static
 
-from local_llm_setup.tui.widgets import CopyableRichLog, LOG_FOOTER_HINT
+from local_llm_setup.tui.widgets import CommandInput, CopyableRichLog, LOG_FOOTER_HINT
 from local_llm_setup.tui.styles import linkify_text, style_section
 from textual.worker import Worker, WorkerState
 
@@ -310,7 +310,6 @@ class LocalLLMSetupApp(App):
         Binding("enter", "nav_submit", "Confirm", show=False),
         Binding("s", "stop_stack", "Stop", show=True),
         Binding("slash", "focus_command", "Command", show=False),
-        Binding("tab", "autocomplete_command", "Autocomplete", show=False),
     ]
 
     def __init__(self, output_dir: Path = OUTPUT_DIR, initial_config: SetupConfig | None = None) -> None:
@@ -346,7 +345,7 @@ class LocalLLMSetupApp(App):
                 yield Static(id="status-bar")
                 yield Static(id="hint-bar")
                 yield Static("", id="command-suggest")
-                yield Input(
+                yield CommandInput(
                     placeholder=command_placeholder(),
                     id="command-input",
                 )
@@ -1053,7 +1052,7 @@ class LocalLLMSetupApp(App):
         log.scroll_end(animate=False)
 
     def action_focus_command(self) -> None:
-        inp = self.query_one("#command-input", Input)
+        inp = self.query_one("#command-input", CommandInput)
         inp.focus()
         if not inp.value.startswith("/"):
             inp.value = "/" + inp.value
@@ -1062,20 +1061,25 @@ class LocalLLMSetupApp(App):
     def action_autocomplete_command(self) -> None:
         if not self._command_input_active():
             return
-        inp = self.query_one("#command-input", Input)
+        inp = self.query_one("#command-input", CommandInput)
+        matches = match_commands(inp.value)
+        if not matches:
+            return
         row = selected_match(inp.value, self._command_suggest_index)
         if row is None:
             return
+        if inp.value == row.display and len(matches) > 1:
+            self._command_suggest_index = (self._command_suggest_index + 1) % len(matches)
+            row = matches[self._command_suggest_index]
         inp.value = row.display
-        self._command_suggest_index = 0
         self._update_command_suggestions()
 
     def _command_input_active(self) -> bool:
         focused = self.focused
-        return isinstance(focused, Input) and focused.id == "command-input"
+        return isinstance(focused, CommandInput) and focused.id == "command-input"
 
     def _cycle_command_suggestion(self, delta: int) -> None:
-        inp = self.query_one("#command-input", Input)
+        inp = self.query_one("#command-input", CommandInput)
         matches = match_commands(inp.value)
         if not matches:
             return
@@ -1087,7 +1091,10 @@ class LocalLLMSetupApp(App):
         if not self._command_input_active():
             suggest.update("")
             return
-        inp = self.query_one("#command-input", Input)
+        inp = self.query_one("#command-input", CommandInput)
+        if not inp.value.strip().startswith("/"):
+            suggest.update("")
+            return
         lines = format_suggestions(inp.value, selected=self._command_suggest_index)
         suggest.update("\n".join(lines))
         row = selected_match(inp.value, self._command_suggest_index)
@@ -1536,6 +1543,18 @@ class LocalLLMSetupApp(App):
             f"Provider: [#c9a227]{fw.value}[/] — type model name, Enter to continue.",
             "/providers · Esc back",
         )
+
+    @on(CommandInput.Autocomplete)
+    def on_command_autocomplete(self, event: CommandInput.Autocomplete) -> None:
+        self.action_autocomplete_command()
+
+    @on(CommandInput.Focused)
+    def on_command_focused(self, event: CommandInput.Focused) -> None:
+        self._update_command_suggestions()
+
+    @on(CommandInput.Blurred)
+    def on_command_blurred(self, event: CommandInput.Blurred) -> None:
+        self._clear_command_suggestions()
 
     @on(Input.Changed, "#command-input")
     def on_command_changed(self, event: Input.Changed) -> None:

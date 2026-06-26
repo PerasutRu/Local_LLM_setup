@@ -77,20 +77,17 @@ def _command_matches() -> list[CommandMatch]:
 
 def match_commands(query: str) -> list[CommandMatch]:
     """Filter slash commands by partial input."""
+    stripped = query.strip()
+    if not stripped.startswith("/"):
+        return []
     name, _ = parse_command(query)
-    if not name and not query.strip():
-        return _command_matches()
-    token = name or query.strip().lstrip("/").lower()
+    token = name or stripped.lstrip("/").lower()
     matches = [
         row
         for row in _command_matches()
         if row.canonical.startswith(token) or row.display.lstrip("/").startswith(token)
     ]
-    if matches:
-        return matches
-    if query.strip().startswith("/") or not query.strip():
-        return _command_matches()
-    return []
+    return matches
 
 
 def format_suggestions(query: str, *, selected: int = 0) -> list[str]:
