@@ -225,10 +225,17 @@ def runtime_fields(framework: Framework, host: HostInfo | None = None) -> list[F
     return fields
 
 
-def setup_fields() -> list[FieldSpec]:
+def setup_fields(profile_name: str = "default") -> list[FieldSpec]:
+    from local_llm_setup.paths import output_dir_for
+
     return [
-        FieldSpec("profile-name-input", "profile_name", default="default", hint="Saved profile filename"),
-        FieldSpec("output-dir-input", "output_dir", default=str(OUTPUT_DIR), hint="Generated compose output directory"),
+        FieldSpec("profile-name-input", "profile_name", default=profile_name, hint="Saved profile filename"),
+        FieldSpec(
+            "output-dir-input",
+            "output_dir",
+            default=str(output_dir_for(profile_name)),
+            hint="Auto: llm_local/output/{profile_name}",
+        ),
     ]
 
 

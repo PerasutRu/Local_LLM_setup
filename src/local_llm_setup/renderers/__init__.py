@@ -5,7 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from local_llm_setup.frameworks import validate_setup
+from local_llm_setup.instances import collect_reserved_ports
 from local_llm_setup.models.config import GeneratedOutput, SetupConfig
+from local_llm_setup.paths import normalize_output_dir
 from local_llm_setup.ports import resolve_port_conflicts
 from local_llm_setup.renderers.compose import render_compose, render_env, render_run_commands
 from local_llm_setup.renderers.nginx import render_api_keys_map, render_nginx_conf
@@ -23,7 +25,13 @@ def normalize_access(config: SetupConfig) -> SetupConfig:
 def prepare_config(config: SetupConfig) -> tuple[SetupConfig, list[str]]:
     """Normalize nginx bind rules and auto-pick free host ports."""
     normalized = normalize_access(config.model_copy(deep=True))
-    return resolve_port_conflicts(normalized)
+    normalized.output_dir = normalize_output_dir(normalized.profile_name, normalized.output_dir)
+    exclude = Path(normalized.output_dir)
+    external = collect_reserved_ports(
+        exclude_output_dir=exclude,
+        exclude_profile=normalized.profile_name,
+    )
+    return resolve_port_conflicts(normalized, external_reserved=external)
 
 
 def generate(config: SetupConfig, dry_run: bool = False) -> GeneratedOutput:

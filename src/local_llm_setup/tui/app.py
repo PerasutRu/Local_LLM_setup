@@ -29,10 +29,11 @@ from local_llm_setup.models.config import (
     SetupConfig,
     VllmServeOptions,
 )
-from local_llm_setup.paths import OUTPUT_DIR
-from local_llm_setup.profiles import save_profile
+from local_llm_setup.paths import OUTPUT_DIR, normalize_output_dir
+from local_llm_setup.instances import list_instances, list_running_instances
+from local_llm_setup.profiles import load_profile, save_profile
 from local_llm_setup.renderers import generate, prepare_config
-from local_llm_setup.runner import DeployResult, deploy, run_curl_tests, stop_stack
+from local_llm_setup.runner import DeployResult, deploy, run_curl_tests, stop_all_stacks, stop_stack
 from local_llm_setup.urls import build_access_urls, format_access_lines
 from local_llm_setup.tui.full_config import (
     format_extra_args,
@@ -51,7 +52,16 @@ from local_llm_setup.tui.full_config import (
     runtime_fields,
     setup_fields,
 )
-from local_llm_setup.tui.commands import PROVIDER_CHOICES, SLASH_COMMANDS, format_help_lines, normalize_command
+from local_llm_setup.tui.commands import (
+    PROVIDER_CHOICES,
+    SLASH_COMMANDS,
+    command_placeholder,
+    format_help_lines,
+    format_suggestions,
+    match_commands,
+    parse_command,
+    selected_match,
+)
 from local_llm_setup.tui.theme import APP_CSS, LOGO
 from local_llm_setup.tui.widgets import ChoiceList
 
@@ -237,7 +247,7 @@ class WizardState:
 
         return SetupConfig(
             profile_name=self.profile_name,
-            output_dir=self.output_dir,
+            output_dir=normalize_output_dir(self.profile_name, self.output_dir),
             host=self.host,
             frameworks=[fc],
             nginx=nginx,
@@ -300,6 +310,7 @@ class LocalLLMSetupApp(App):
         Binding("enter", "nav_submit", "Confirm", show=False),
         Binding("s", "stop_stack", "Stop", show=True),
         Binding("slash", "focus_command", "Command", show=False),
+        Binding("tab", "autocomplete_command", "Autocomplete", show=False),
     ]
 
     def __init__(self, output_dir: Path = OUTPUT_DIR, initial_config: SetupConfig | None = None) -> None:
@@ -311,6 +322,9 @@ class LocalLLMSetupApp(App):
         self._deploy_log: CopyableRichLog | None = None
         self._deploy_succeeded = False
         self._remove_volumes_on_stop = False
+        self._stop_target: str = "current"
+        self._command_suggest_index = 0
+        self._editing_instance: str | None = None
         self._command_aliases = {
             sc.name: sc.name for sc in SLASH_COMMANDS
         }
@@ -331,8 +345,9 @@ class LocalLLMSetupApp(App):
                 yield Static(id="welcome")
                 yield Static(id="status-bar")
                 yield Static(id="hint-bar")
+                yield Static("", id="command-suggest")
                 yield Input(
-                    placeholder="/help · /providers · /delete-container · /test",
+                    placeholder=command_placeholder(),
                     id="command-input",
                 )
 
@@ -441,9 +456,15 @@ class LocalLLMSetupApp(App):
         lists[0].focus()
 
     def action_nav_up(self) -> None:
+        if self._command_input_active():
+            self._cycle_command_suggestion(-1)
+            return
         self._forward_to_choices("cursor_up")
 
     def action_nav_down(self) -> None:
+        if self._command_input_active():
+            self._cycle_command_suggestion(1)
+            return
         self._forward_to_choices("cursor_down")
 
     def action_nav_toggle(self) -> None:
@@ -555,7 +576,7 @@ class LocalLLMSetupApp(App):
             "ollama-models-input": s.ollama_models,
             "ollama-host-input": s.ollama_host,
             "profile-name-input": s.profile_name,
-            "output-dir-input": str(s.output_dir),
+            "output-dir-input": str(normalize_output_dir(s.profile_name, s.output_dir)),
             "nginx-port": str(s.nginx_port),
             "nginx-server-name": s.nginx_server_name,
             "nginx-bind-host": s.nginx_bind_host,
@@ -641,9 +662,7 @@ class LocalLLMSetupApp(App):
         self.state.ollama_models = read_field(body, "ollama-models-input", "/root/.ollama")
         self.state.ollama_host = read_field(body, "ollama-host-input", "0.0.0.0:11434")
         self.state.profile_name = read_field(body, "profile-name-input", "default") or "default"
-        out = read_field(body, "output-dir-input")
-        if out:
-            self.state.output_dir = Path(out)
+        self.state.output_dir = normalize_output_dir(self.state.profile_name, self.state.output_dir)
 
     def _sync_nginx_fields(self) -> None:
         body = self.query_one("#step-body", VerticalScroll)
@@ -712,7 +731,7 @@ class LocalLLMSetupApp(App):
         if not fw:
             return
         body.mount(self._section_label("setup · profile and output"))
-        mount_fields(body, setup_fields(), self._model_field_values())
+        mount_fields(body, setup_fields(self.state.profile_name), self._model_field_values())
         body.mount(self._section_label("runtime · Docker & networking"))
         values = self._model_field_values()
         fields = runtime_fields(fw, self.state.host)
@@ -965,8 +984,35 @@ class LocalLLMSetupApp(App):
         def on_status(msg: str) -> None:
             self.call_from_thread(self._update_footer, msg, "please wait")
 
+        if self._stop_target == "__all__":
+            return stop_all_stacks(
+                remove_volumes=self._remove_volumes_on_stop,
+                on_output=on_output,
+                on_status=on_status,
+            )
+
+        if self._stop_target not in ("", "current"):
+            for inst in list_instances():
+                if inst.profile_name != self._stop_target:
+                    continue
+                config = None
+                if inst.profile_path.is_file():
+                    try:
+                        config = load_profile(inst.profile_path)
+                    except OSError:
+                        config = None
+                return stop_stack(
+                    inst.output_dir,
+                    config=config,
+                    remove_volumes=self._remove_volumes_on_stop,
+                    on_output=on_output,
+                    on_status=on_status,
+                )
+            return DeployResult(success=False, error=f"Instance not found: {self._stop_target}")
+
         return stop_stack(
             self.state.output_dir,
+            config=self.state.build_config() if self.state.framework else None,
             remove_volumes=self._remove_volumes_on_stop,
             on_output=on_output,
             on_status=on_status,
@@ -1011,12 +1057,188 @@ class LocalLLMSetupApp(App):
         inp.focus()
         if not inp.value.startswith("/"):
             inp.value = "/" + inp.value
+        self._update_command_suggestions()
+
+    def action_autocomplete_command(self) -> None:
+        if not self._command_input_active():
+            return
+        inp = self.query_one("#command-input", Input)
+        row = selected_match(inp.value, self._command_suggest_index)
+        if row is None:
+            return
+        inp.value = row.display
+        self._command_suggest_index = 0
+        self._update_command_suggestions()
+
+    def _command_input_active(self) -> bool:
+        focused = self.focused
+        return isinstance(focused, Input) and focused.id == "command-input"
+
+    def _cycle_command_suggestion(self, delta: int) -> None:
+        inp = self.query_one("#command-input", Input)
+        matches = match_commands(inp.value)
+        if not matches:
+            return
+        self._command_suggest_index = (self._command_suggest_index + delta) % len(matches)
+        self._update_command_suggestions()
+
+    def _update_command_suggestions(self) -> None:
+        suggest = self.query_one("#command-suggest", Static)
+        if not self._command_input_active():
+            suggest.update("")
+            return
+        inp = self.query_one("#command-input", Input)
+        lines = format_suggestions(inp.value, selected=self._command_suggest_index)
+        suggest.update("\n".join(lines))
+        row = selected_match(inp.value, self._command_suggest_index)
+        if row is not None:
+            self.query_one("#hint-bar", Static).update(row.description)
+
+    def _clear_command_suggestions(self) -> None:
+        self._command_suggest_index = 0
+        self.query_one("#command-suggest", Static).update("")
 
     def _go_to_step(self, step_name: str) -> None:
         steps = self._wizard_steps()
         if step_name in steps:
             self._step_idx = steps.index(step_name)
             self._show_step()
+
+    def _show_instances(self) -> None:
+        body = self.query_one("#step-body", VerticalScroll)
+        body.remove_children()
+        body.mount(self._section_label("instances · saved profiles & running stacks"))
+
+        instances = list_instances()
+        if not instances:
+            body.mount(Static("  [dim]ยังไม่มี profile — สร้างใหม่จาก wizard[/dim]", classes="skill-line"))
+        else:
+            for inst in instances:
+                status_color = {"running": "green", "stopped": "yellow", "not_deployed": "dim"}.get(
+                    inst.status, "white"
+                )
+                fw = ", ".join(inst.frameworks) if inst.frameworks else "—"
+                body.mount(
+                    Static(
+                        f"  [#c9a227]{inst.profile_name}[/] "
+                        f"[{status_color}]{inst.status}[/{status_color}] · {fw} · ports: {inst.ports_summary}",
+                        classes="skill-line",
+                    )
+                )
+
+        choices: list[tuple[str, str]] = []
+        for inst in instances:
+            choices.append((f"edit:{inst.profile_name}", f"Edit · {inst.profile_name}"))
+            if inst.status == "running":
+                choices.append((f"stop:{inst.profile_name}", f"Stop · {inst.profile_name}"))
+            else:
+                choices.append((f"deploy:{inst.profile_name}", f"Deploy · {inst.profile_name}"))
+        choices.append(("__new__", "Create new profile →"))
+
+        panel = self.query_one("#choices-panel", Container)
+        panel.remove_children()
+        cl = ChoiceList(choices, id="instances-choice")
+        panel.mount(cl)
+        self._active_choices = cl
+        self.call_after_refresh(cl.focus)
+        self._update_footer(
+            "เลือก profile เพื่อแก้ไขหรือ deploy — แต่ละ profile ใช้ output folder แยกกัน",
+            "↑↓ Enter confirm · Esc cancel",
+        )
+
+    def _load_profile(self, profile_name: str) -> bool:
+        profile_path = Path("llm_local/profiles") / f"{profile_name}.yaml"
+        if not profile_path.is_file():
+            self._write_command_output([f"[red]Profile not found: {profile_name}[/red]"])
+            return False
+        try:
+            config = load_profile(profile_path)
+        except Exception as exc:
+            self._write_command_output([f"[red]Failed to load profile: {exc}[/red]"])
+            return False
+        config.output_dir = normalize_output_dir(config.profile_name, config.output_dir)
+        self.state = WizardState(config.output_dir, config)
+        self._editing_instance = profile_name
+        self._deploy_succeeded = False
+        return True
+
+    def _deploy_profile(self, profile_name: str) -> None:
+        if not self._load_profile(profile_name):
+            return
+        try:
+            config = self.state.to_config()
+            generate(config)
+            save_profile(config)
+        except (ValueError, Exception) as exc:
+            self._write_command_output([f"[red]{exc}[/red]"])
+            return
+        body = self.query_one("#step-body", VerticalScroll)
+        body.remove_children()
+        body.mount(self._section_label(f"deploy · {profile_name}"))
+        self._mount_deploy_log(body)
+        self._deploy_succeeded = False
+        self._update_footer("Starting Docker containers...", "please wait")
+        self.run_worker(partial(self._do_deploy, config), name="deploy", thread=True, exclusive=True)
+
+    def _stop_profile(self, profile_name: str) -> None:
+        self._remove_volumes_on_stop = False
+        self._stop_target = profile_name
+        self._begin_stop(label=f"stop · {profile_name}")
+
+    def _show_stop_picker(self, *, remove_volumes: bool = False) -> None:
+        self._remove_volumes_on_stop = remove_volumes
+        running = list_running_instances()
+        deployed = [inst for inst in list_instances() if inst.status != "not_deployed"]
+
+        body = self.query_one("#step-body", VerticalScroll)
+        body.remove_children()
+        title = "delete · choose instance" if remove_volumes else "stop · choose instance"
+        body.mount(self._section_label(title))
+
+        if not running:
+            body.mount(Static("  [dim]ไม่มี stack ที่รันอยู่[/dim]", classes="skill-line"))
+            if deployed:
+                body.mount(Static("  [dim]deployed แต่ stopped:[/dim]", classes="skill-line"))
+                for inst in deployed:
+                    body.mount(
+                        Static(
+                            f"    [#c9a227]{inst.profile_name}[/] · ports: {inst.ports_summary}",
+                            classes="skill-line",
+                        )
+                    )
+            self.query_one("#choices-panel", Container).remove_children()
+            self._active_choices = None
+            self._clear_command_suggestions()
+            self._update_footer("No running stacks.", "/stop smollm-1 · /instances · /help")
+            return
+
+        for inst in running:
+            fw = ", ".join(inst.frameworks) if inst.frameworks else "—"
+            body.mount(
+                Static(
+                    f"  [#c9a227]{inst.profile_name}[/] · {fw} · ports: {inst.ports_summary}",
+                    classes="skill-line",
+                )
+            )
+
+        choices: list[tuple[str, str]] = [
+            ("__all__", f"Stop all ({len(running)} running)"),
+        ]
+        for inst in running:
+            verb = "Delete" if remove_volumes else "Stop"
+            choices.append((inst.profile_name, f"{verb} · {inst.profile_name}"))
+        choices.append(("__cancel__", "Cancel"))
+
+        panel = self.query_one("#choices-panel", Container)
+        panel.remove_children()
+        cl = ChoiceList(choices, id="stop-choice")
+        panel.mount(cl)
+        self._active_choices = cl
+        self.call_after_refresh(cl.focus)
+        self._update_footer(
+            "เลือก instance ที่จะหยุด หรือ Stop all · /stop ชื่อ-profile",
+            "↑↓ Enter confirm · Esc cancel",
+        )
 
     def _show_providers(self) -> None:
         panel = self.query_one("#choices-panel", Container)
@@ -1028,18 +1250,23 @@ class LocalLLMSetupApp(App):
         self._update_footer("เลือก provider (ollama / vllm)", "↑↓ Enter confirm · Esc cancel")
 
     def _handle_slash_command(self, raw: str) -> None:
-        cmd = normalize_command(raw)
+        cmd, args = parse_command(raw)
         if not cmd:
             return
         resolved = self._command_aliases.get(cmd, cmd)
+        self._clear_command_suggestions()
 
         if resolved == "help":
             self._write_command_output(format_help_lines())
-            self._update_footer("Slash command help", "/help · /providers · /delete-container · /test")
+            self._update_footer("Slash command help", command_placeholder())
             return
 
         if resolved == "providers":
             self._show_providers()
+            return
+
+        if resolved == "instances":
+            self._show_instances()
             return
 
         if resolved == "doctor":
@@ -1047,13 +1274,21 @@ class LocalLLMSetupApp(App):
             return
 
         if resolved == "stop":
-            self._remove_volumes_on_stop = False
-            self._begin_stop()
+            if args:
+                self._stop_target = args[0]
+                self._remove_volumes_on_stop = False
+                self._begin_stop(label=f"stop · {args[0]}")
+                return
+            self._show_stop_picker(remove_volumes=False)
             return
 
         if resolved == "delete-container":
-            self._remove_volumes_on_stop = True
-            self._begin_stop(label="delete · docker compose down -v")
+            if args:
+                self._stop_target = args[0]
+                self._remove_volumes_on_stop = True
+                self._begin_stop(label=f"delete · {args[0]}")
+                return
+            self._show_stop_picker(remove_volumes=True)
             return
 
         if resolved in ("test", "curl"):
@@ -1103,8 +1338,7 @@ class LocalLLMSetupApp(App):
 
     def action_stop_stack(self) -> None:
         if self.step in ("done", "doctor"):
-            self._remove_volumes_on_stop = False
-            self._begin_stop()
+            self._show_stop_picker(remove_volumes=False)
 
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
         if event.worker.name not in ("deploy", "stop", "curl-test"):
@@ -1130,9 +1364,10 @@ class LocalLLMSetupApp(App):
         if event.worker.name == "stop":
             if result.success:
                 self._deploy_succeeded = False
-                self._update_footer("Docker stack stopped.", "q quit")
+                label = "All stacks stopped." if self._stop_target == "__all__" else "Docker stack stopped."
+                self._update_footer(label, "q quit")
                 if self._deploy_log is not None:
-                    self._deploy_log.write("\n[bold green]✓ Stack stopped[/bold green]")
+                    self._deploy_log.write(f"\n[bold green]✓ {label}[/bold green]")
             else:
                 self._update_footer(f"Stop failed: {result.error or 'unknown error'}", "q quit")
                 if self._deploy_log is not None:
@@ -1155,7 +1390,7 @@ class LocalLLMSetupApp(App):
     @on(ChoiceList.Submitted, "#doctor-continue")
     def on_doctor_continue(self, event: ChoiceList.Submitted) -> None:
         if event.selected_ids[0] == "stop":
-            self._begin_stop()
+            self._show_stop_picker(remove_volumes=False)
         else:
             self._next()
 
@@ -1247,6 +1482,47 @@ class LocalLLMSetupApp(App):
         self.state.auto_run = event.selected_ids[0] == "generate_run"
         self._next()
 
+    @on(ChoiceList.Submitted, "#stop-choice")
+    def on_stop_choice(self, event: ChoiceList.Submitted) -> None:
+        choice = event.selected_ids[0]
+        if choice == "__cancel__":
+            self._update_footer("Cancelled.", "/help · /instances")
+            return
+        self._stop_target = choice
+        label = "delete · all" if choice == "__all__" and self._remove_volumes_on_stop else (
+            "stop · all" if choice == "__all__" else (
+                f"delete · {choice}" if self._remove_volumes_on_stop else f"stop · {choice}"
+            )
+        )
+        body = self.query_one("#step-body", VerticalScroll)
+        body.remove_children()
+        body.mount(self._section_label(label))
+        self._mount_deploy_log(body)
+        self._deploy_succeeded = False
+        self._update_footer("Stopping Docker stack...", "please wait")
+        self.run_worker(self._do_stop, name="stop", thread=True, exclusive=True)
+
+    @on(ChoiceList.Submitted, "#instances-choice")
+    def on_instances_choice(self, event: ChoiceList.Submitted) -> None:
+        choice = event.selected_ids[0]
+        if choice == "__new__":
+            self._editing_instance = None
+            self._go_to_step("framework")
+            self._update_footer("เลือก framework สำหรับ profile ใหม่", "Esc back")
+            return
+        action, _, name = choice.partition(":")
+        if action == "edit":
+            if self._load_profile(name):
+                self._go_to_step("summary")
+                self._update_footer(
+                    f"Editing profile [#c9a227]{name}[/] — แก้ไขแล้วเลือก Generate & deploy",
+                    "/deploy เพื่อ update stack โดยไม่กระทบตัวอื่น",
+                )
+        elif action == "deploy":
+            self._deploy_profile(name)
+        elif action == "stop":
+            self._stop_profile(name)
+
     @on(ChoiceList.Submitted, "#provider-command")
     def on_provider_command(self, event: ChoiceList.Submitted) -> None:
         fw = Framework(event.selected_ids[0])
@@ -1261,10 +1537,16 @@ class LocalLLMSetupApp(App):
             "/providers · Esc back",
         )
 
+    @on(Input.Changed, "#command-input")
+    def on_command_changed(self, event: Input.Changed) -> None:
+        self._command_suggest_index = 0
+        self._update_command_suggestions()
+
     @on(Input.Submitted, "#command-input")
     def on_command_submitted(self, event: Input.Submitted) -> None:
         raw = event.value.strip()
         event.input.value = ""
+        self._clear_command_suggestions()
         if not raw:
             return
         self._handle_slash_command(raw)

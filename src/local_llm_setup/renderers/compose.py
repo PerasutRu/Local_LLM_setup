@@ -7,7 +7,8 @@ from typing import Any
 import yaml
 
 from local_llm_setup.frameworks import get_plugin
-from local_llm_setup.ports import ollama_host_for_port
+from local_llm_setup.paths import instance_slug
+from local_llm_setup.ports import ollama_host_for_port, split_host_port
 from local_llm_setup.models.config import (
     Framework,
     FrameworkConfig,
@@ -18,6 +19,22 @@ from local_llm_setup.models.config import (
 )
 
 COMPOSE_NETWORK = "local_llm"
+
+
+def _instance_slug(config: SetupConfig) -> str:
+    return instance_slug(config.profile_name)
+
+
+def _container_name(config: SetupConfig, service: str) -> str:
+    return f"local-llm-{_instance_slug(config)}-{service}"
+
+
+def _network_name(config: SetupConfig) -> str:
+    return f"local-llm-setup-{_instance_slug(config)}-{COMPOSE_NETWORK}"
+
+
+def _ollama_volume_name(config: SetupConfig) -> str:
+    return f"ollama_data_{_instance_slug(config)}"
 
 
 def _needs_gpu(fc: FrameworkConfig, host: HostInfo | None) -> bool:
@@ -49,6 +66,16 @@ def _service_name(fc: FrameworkConfig) -> str:
 
 def _published_port(fc: FrameworkConfig) -> int:
     return fc.publish_port if fc.publish_port is not None else fc.port
+
+
+def _provider_publish_bind(fc: FrameworkConfig, config: SetupConfig) -> str:
+    """Host bind address when publishing a provider port alongside nginx."""
+    if not config.nginx.enabled:
+        return fc.bind_host
+    if fc.framework == Framework.OLLAMA:
+        host, _ = split_host_port(ollama_host_for_port(fc))
+        return host or "0.0.0.0"
+    return "0.0.0.0"
 
 
 def _build_vllm_serve_args(fc: FrameworkConfig) -> list[str]:
@@ -152,16 +179,19 @@ def _build_command(fc: FrameworkConfig) -> list[str] | str | None:
     return fc.extra_args or None
 
 
+def tunnel_container_name(config: SetupConfig) -> str:
+    return _container_name(config, "tunnel")
+
+
 def _build_service(fc: FrameworkConfig, config: SetupConfig) -> dict[str, Any]:
     host = config.host
     plugin = get_plugin(fc.framework)
     image = plugin.image_for_host(host, fc.image_tag)
     name = _service_name(fc)
-    expose_internal_only = config.nginx.enabled
 
     service: dict[str, Any] = {
         "image": image,
-        "container_name": f"local-llm-{name}",
+        "container_name": _container_name(config, name),
         "restart": "unless-stopped",
         "shm_size": fc.shm_size,
         "healthcheck": {
@@ -172,16 +202,16 @@ def _build_service(fc: FrameworkConfig, config: SetupConfig) -> dict[str, Any]:
             "start_period": "120s",
         },
     }
-    if not expose_internal_only:
-        host_port = _published_port(fc)
-        service["ports"] = [f"{fc.bind_host}:{host_port}:{fc.port}"]
+    host_port = _published_port(fc)
+    bind = _provider_publish_bind(fc, config)
+    service["ports"] = [f"{bind}:{host_port}:{fc.port}"]
 
     env: dict[str, str] = dict(fc.extra_env)
     if config.hf_token and fc.framework in (Framework.VLLM, Framework.SGLANG):
         env[fc.model.hf_token_env] = "${HF_TOKEN}"
 
     if fc.framework == Framework.OLLAMA:
-        service["volumes"] = ["ollama_data:/root/.ollama"]
+        service["volumes"] = [f"{_ollama_volume_name(config)}:/root/.ollama"]
         # Ollama defaults to 127.0.0.1; bind all interfaces so nginx/other containers can reach it.
         env["OLLAMA_HOST"] = ollama_host_for_port(fc)
         service["healthcheck"]["test"] = [
@@ -253,7 +283,7 @@ def render_compose(config: SetupConfig) -> str:
     if config.nginx.enabled:
         nginx_service: dict[str, Any] = {
             "image": "nginx:1.27-alpine",
-            "container_name": "local-llm-nginx",
+            "container_name": _container_name(config, "nginx"),
             "restart": "unless-stopped",
             "ports": [f"{config.nginx.bind_host}:{config.nginx.listen_port}:80"],
             "volumes": [
@@ -275,7 +305,7 @@ def render_compose(config: SetupConfig) -> str:
         if config.nginx.tunnel_enabled:
             services["cloudflared"] = _attach_network({
                 "image": "cloudflare/cloudflared:latest",
-                "container_name": "local-llm-tunnel",
+                "container_name": tunnel_container_name(config),
                 "restart": "unless-stopped",
                 "command": f"tunnel --no-autoupdate --url http://nginx:80",
                 "depends_on": {
@@ -284,14 +314,14 @@ def render_compose(config: SetupConfig) -> str:
             })
 
     if any(fc.framework == Framework.OLLAMA for fc in config.frameworks):
-        volumes["ollama_data"] = {}
+        volumes[_ollama_volume_name(config)] = {}
 
     compose: dict[str, Any] = {
         "services": services,
         "networks": {
             COMPOSE_NETWORK: {
                 "driver": "bridge",
-                "name": f"local-llm-setup-{COMPOSE_NETWORK}",
+                "name": _network_name(config),
             },
         },
     }

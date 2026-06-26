@@ -69,15 +69,15 @@ def test_compose_uses_shared_docker_network():
     compose = render_compose(_setup())
     assert "networks:" in compose
     assert "local_llm:" in compose
-    assert "local-llm-setup-local_llm" in compose
+    assert "local-llm-setup-default-local_llm" in compose
     assert "networks:\n    - local_llm" in compose or "- local_llm" in compose
     assert "ollama:" in compose
     assert "nginx:" in compose
 
 
-def test_compose_nginx_hides_framework_host_ports():
+def test_compose_nginx_publishes_provider_port():
     compose = render_compose(_setup())
-    assert "127.0.0.1:11434:11434" not in compose
+    assert "0.0.0.0:11434:11434" in compose
     assert "0.0.0.0:8080:80" in compose
 
 

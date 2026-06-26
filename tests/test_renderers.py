@@ -17,7 +17,7 @@ def test_render_ollama_compose():
     text = render_compose(setup)
     assert "ollama" in text
     assert "11434" in text
-    assert "ollama_data" in text
+    assert "ollama_data_sample" in text
     assert "OLLAMA_HOST" in text
     assert "0.0.0.0:11434" in text
 
@@ -57,13 +57,15 @@ def test_generate_dry_run(tmp_path: Path):
     assert not (tmp_path / "docker-compose.yaml").exists()
 
 
-def test_generate_writes_files(tmp_path: Path):
+def test_generate_writes_files(tmp_path: Path, monkeypatch):
     setup = load_profile(Path("llm_local/profiles/sample.yaml"))
-    setup.output_dir = tmp_path
+    out = tmp_path / "llm_local" / "output" / "sample"
+    setup.output_dir = out
+    monkeypatch.chdir(tmp_path)
     generate(setup)
-    assert (tmp_path / "docker-compose.yaml").exists()
-    assert (tmp_path / ".env").exists()
-    assert (tmp_path / "RUN.md").exists()
+    assert (out / "docker-compose.yaml").exists()
+    assert (out / ".env").exists()
+    assert (out / "RUN.md").exists()
 
 
 def test_vllm_compose_has_model():

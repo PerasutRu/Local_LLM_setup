@@ -107,11 +107,15 @@ def _bump_internal_port(
     return port, f"Port {current} {reason}; {framework.value} uses {port}."
 
 
-def resolve_port_conflicts(config: SetupConfig) -> tuple[SetupConfig, list[str]]:
+def resolve_port_conflicts(
+    config: SetupConfig,
+    *,
+    external_reserved: set[int] | None = None,
+) -> tuple[SetupConfig, list[str]]:
     """Assign unique, available host ports for every framework and nginx."""
     warnings: list[str] = []
     # Docker publishes each host port number once, regardless of bind IP.
-    reserved: set[int] = set()
+    reserved: set[int] = set(external_reserved or ())
 
     for fc in config.frameworks:
         old = fc.port
@@ -121,7 +125,7 @@ def resolve_port_conflicts(config: SetupConfig) -> tuple[SetupConfig, list[str]]
                     framework=fc.framework,
                     current=old,
                     reserved=reserved,
-                    reason="already used by another framework in this stack",
+                    reason="already used by another instance",
                 )
                 if message:
                     warnings.append(message)
@@ -131,7 +135,7 @@ def resolve_port_conflicts(config: SetupConfig) -> tuple[SetupConfig, list[str]]
 
         host = _check_host(fc.bind_host)
         if old in reserved:
-            reason = "already used by another framework in this stack"
+            reason = "already used by another instance"
         elif not is_port_free(old, host):
             reason = f"in use on {host}"
         else:
@@ -160,7 +164,7 @@ def resolve_port_conflicts(config: SetupConfig) -> tuple[SetupConfig, list[str]]
         host = _check_host(config.nginx.bind_host)
         old = config.nginx.listen_port
         if old in reserved:
-            reason = "already used by another service in this stack"
+            reason = "already used by another instance"
         elif not is_port_free(old, host):
             reason = f"in use on {host}"
         else:

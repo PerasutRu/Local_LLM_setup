@@ -13,6 +13,9 @@ TUI wizard for hosting local LLMs with **Ollama**, **vLLM**, **llama.cpp**, and 
 - Capability flags: vision, audio, tool calling, speculative decoding (MTP)
 - Optional nginx reverse proxy with API key auth (`X-API-Key` or `Authorization: Bearer`) and Cloudflare quick tunnel
 - Generate & deploy from TUI or CLI (`generate --run`, `run`, `stop`)
+- **Multiple isolated stacks** — one profile per instance, output under `llm_local/output/{profile_name}/`, unique Docker project/container names
+- **Cross-instance port allocation** — auto-avoid conflicts for providers (Ollama, vLLM, …), nginx, and Cloudflare tunnel sidecars
+- **Instance management** — list, edit, deploy, and stop stacks independently (`/instances`, `local-llm-setup instances`)
 - Access URLs for localhost, **public IP** (auto-detected), private LAN, and Cloudflare tunnel — plus curl smoke tests
 - Save/load YAML profiles
 - One-line server install and uninstall via `curl | bash` ([Hermes-style](https://hermes-agent.nousresearch.com/))
@@ -32,7 +35,7 @@ The installer bootstraps **uv**, **Python 3.11**, clones the repo, creates a ven
 |------|---------|
 | `~/.local-llm-setup/app` | Git checkout + virtualenv |
 | `~/.local-llm-setup/bin/uv` | Managed uv binary |
-| `~/.local-llm-setup/llm_local/output` | Generated compose/nginx files |
+| `~/.local-llm-setup/llm_local/output` | Generated compose/nginx files (one subfolder per profile) |
 | `~/.local-llm-setup/llm_local/profiles` | Saved YAML profiles |
 | `~/.local/bin/local-llm-setup` | CLI command shim |
 
@@ -94,7 +97,9 @@ local-llm-setup generate --config llm_local/profiles/sample.yaml --run
 
 # Start or stop an existing stack
 local-llm-setup run --config llm_local/profiles/sample.yaml
-local-llm-setup stop
+local-llm-setup stop --config llm_local/profiles/sample.yaml
+local-llm-setup stop --all                    # stop every running instance
+local-llm-setup instances                     # list profiles + status
 ```
 
 **Full guide (Thai):** [GUIDE.md](GUIDE.md) · **Architecture:** [UML.md](UML.md)
@@ -106,9 +111,10 @@ local-llm-setup stop
 | `tui` | Interactive wizard |
 | `doctor` | Check Docker, GPU, CUDA, nginx (`--json` for machine output) |
 | `detect` | Alias for `doctor` |
-| `generate` | Write `llm_local/output/` from a profile (`--run` to deploy, `--dry-run` to validate) |
+| `generate` | Write `llm_local/output/{profile}/` from a profile (`--run` to deploy, `--dry-run` to validate) |
 | `run` | Start a generated stack (`--no-pull` to skip image pull) |
-| `stop` | Stop the stack (`--volumes` to remove data volumes) |
+| `stop` | Stop one stack (`--config` profile, `--all` every running instance, `--volumes` remove data) |
+| `instances` | List saved profiles, ports, and running/stopped status (`--json`) |
 | `save` | Save a config as a named profile |
 
 After `generate` or `run`, the CLI prints **access URLs** (localhost, public IP when detectable, private LAN, and Cloudflare tunnel when nginx is enabled). See [Access URLs](#access-urls) below.
@@ -127,10 +133,11 @@ After deploy, the TUI and `ACCESS.md` show several endpoints — each is for a d
 
 **Public IP detection** — on deploy, the tool queries `api.ipify.org` / `ifconfig.me` over HTTPS. If that fails (offline host), it falls back to the private LAN address.
 
-**With nginx enabled**, only nginx publishes a host port (e.g. `8080` or `8081` if the default was busy). Ollama/vLLM containers stay on the internal Docker network (`11434/tcp` in `docker ps` with no `0.0.0.0:…` mapping is expected). Traffic flows:
+**With nginx enabled**, nginx publishes the main entry port (e.g. `8080`). Provider containers also publish their listen port on the host (e.g. `0.0.0.0:11434` for Ollama, `0.0.0.0:11435` for a second Ollama instance) so each stack stays addressable directly. Traffic through nginx:
 
 ```
 Client → host:8080 (nginx) → ollama:11434 (internal)
+Client → host:11434 (direct Ollama API)
 Client → https://….trycloudflare.com (cloudflared) → nginx → ollama
 ```
 
@@ -181,19 +188,38 @@ docker logs local-llm-tunnel 2>&1 | grep trycloudflare   # current tunnel URL
 
 ## TUI slash commands
 
-Press `/` in the wizard to open the command bar:
+Press `/` in the wizard to open the command bar. While typing, a **suggestion panel** lists matching commands with descriptions; use **↑↓** to highlight, **Tab** to autocomplete, **Enter** to run.
 
 | Command | Action |
 |---------|--------|
-| `/help` | List commands |
+| `/help` | List all commands |
+| `/instances` | List profiles — edit, deploy, or stop per instance (`/profiles`, `/list`) |
 | `/providers` | Switch Ollama / vLLM |
-| `/deploy` | Regenerate and start the stack |
+| `/deploy` | Regenerate and start the current profile's stack |
 | `/test` | Run curl smoke tests (uses compose port + `api_keys.map` when auth is on) |
-| `/stop` | Stop containers (keep volumes) |
-| `/delete-container` | Stop and remove containers + volumes |
+| `/stop` | Pick instance to stop, stop all running, or `/stop my-profile` |
+| `/delete-container` | Same picker as `/stop` but removes volumes (`/delete`) |
 | `/doctor` | Jump back to Host Doctor |
 
-Press `s` to stop the running stack from any screen.
+Press `s` to open the **stop picker** (stop all or choose one instance).
+
+### Multiple instances
+
+Each profile gets its own output folder and Docker isolation:
+
+```
+llm_local/
+├── profiles/
+│   ├── smollm-1.yaml
+│   └── smollm-2.yaml
+└── output/
+    ├── smollm-1/          # docker-compose.yaml, nginx.conf, …
+    └── smollm-2/
+```
+
+- **Profile name** → subfolder name → Docker project `local-llm-{profile}` and containers `local-llm-{profile}-ollama`, etc.
+- Ports are reserved across other profiles so two Ollama stacks get `11434` and `11435`, nginx `8080` and `8081`, and so on.
+- Edit a profile via `/instances` → **Edit**, change settings, then **Generate & deploy** or `/deploy` — only that stack restarts.
 
 ### Deploy log (Pretty + Copy)
 
@@ -241,7 +267,7 @@ Set a custom image in the TUI (Quick: Model step; Full: Runtime step) or in prof
 | Step | Fields |
 |------|--------|
 | Model | `model.name`, `context_length`, `quantization` (vLLM/SGLang), `tensor_parallel`, HF token |
-| Runtime | `profile_name`, `output_dir`, `port`, `bind_host`, `image_tag`, `shm_size`, `extra_env`, `extra_args` |
+| Runtime | `profile_name` (→ `llm_local/output/{name}/`), `port`, `bind_host`, `image_tag`, `shm_size`, `extra_env`, `extra_args` |
 | Nginx | `listen_port`, `server_name`, `bind_host`, `client_max_body_size`, `proxy_read_timeout`, CORS, cloudflared tunnel |
 
 Provider-specific extras:
@@ -308,36 +334,38 @@ The wizard validates names before generate/deploy; invalid examples include extr
 
 ## Docker Compose
 
-Generated stacks use a single Compose file in `llm_local/output/docker-compose.yaml`. All services (LLM backends, nginx, cloudflared) join the **`local_llm`** bridge network (`local-llm-setup-local_llm`) so containers talk over Docker DNS (`ollama:11434`, `nginx:80`, etc.) instead of the host loopback.
+Each profile writes to **`llm_local/output/{profile_name}/docker-compose.yaml`**. Services join a per-profile bridge network (`local-llm-setup-{profile}-local_llm`) with explicit `container_name` values so multiple stacks can run on one host.
 
 ```bash
-cd llm_local/output
-docker compose pull
-docker compose up -d
+cd llm_local/output/smollm-1
+docker compose -p local-llm-smollm-1 pull
+docker compose -p local-llm-smollm-1 up -d
 docker compose ps
 docker compose logs -f nginx ollama
 docker compose down          # stop
 docker compose down -v       # stop + remove volumes
 ```
 
-When **nginx is enabled**, only nginx (and optional cloudflared) publish host ports. LLM containers stay on the internal network; nginx proxies to `service_name:port` inside the stack. In `docker ps`, expect `11434/tcp` without a host mapping for Ollama — use the nginx port or tunnel URL instead.
+When **nginx is enabled**, nginx exposes the main HTTP port and the provider publishes its listen port (e.g. `0.0.0.0:11434:11434`). Nginx still proxies to `service_name:port` inside the stack. An optional **cloudflared** sidecar provides a public `trycloudflare.com` URL per instance.
 
-**Ollama + nginx:** generated compose sets `OLLAMA_HOST=0.0.0.0:<port>` so the Ollama HTTP API is reachable from nginx and other containers on `local_llm`. Without this, Ollama listens on `127.0.0.1` inside its container and nginx returns **502 Bad Gateway** on `/api/*` while `/health` still passes.
-
-When **nginx is disabled**, each framework publishes its own host port (e.g. `127.0.0.1:11434`).
+When **nginx is disabled**, only the framework port is published (e.g. `127.0.0.1:11434`).
 
 CLI shortcuts:
 
 ```bash
-local-llm-setup generate --config llm_local/profiles/sample.yaml --run
-local-llm-setup run --config llm_local/profiles/sample.yaml
-local-llm-setup stop --output ./llm_local/output
-local-llm-setup stop --output ./llm_local/output --volumes
+local-llm-setup generate --config llm_local/profiles/smollm-1.yaml --run
+local-llm-setup run --config llm_local/profiles/smollm-1.yaml
+local-llm-setup stop --config llm_local/profiles/smollm-1.yaml
+local-llm-setup stop --all
+local-llm-setup stop --config llm_local/profiles/smollm-1.yaml --volumes
+local-llm-setup instances
 ```
 
 ## Output files
 
-- `docker-compose.yaml` — services on shared network `local_llm`, healthchecks, GPU reservations
+Per profile under `llm_local/output/{profile_name}/`:
+
+- `docker-compose.yaml` — isolated services, healthchecks, GPU reservations
 - `.env` — secrets (e.g. `HF_TOKEN`)
 - `nginx.conf` — reverse proxy (if enabled)
 - `api_keys.map` — API key map for nginx (if enabled)
@@ -345,7 +373,7 @@ local-llm-setup stop --output ./llm_local/output --volumes
 - `commands.log` — append-only log of every shell command executed during deploy/stop/test (for debugging)
 - `ACCESS.md` — access URLs and example curl commands
 
-When nginx is enabled, the framework binds to `127.0.0.1` internally and only nginx is exposed on `0.0.0.0`. An optional **cloudflared** sidecar provides a public `trycloudflare.com` URL.
+When nginx is enabled, the framework binds on `0.0.0.0` inside the container (`OLLAMA_HOST=0.0.0.0:<port>`) and publishes that port on the host alongside nginx. An optional **cloudflared** sidecar provides a public `trycloudflare.com` URL.
 
 ## Troubleshooting
 
@@ -355,15 +383,17 @@ When nginx is enabled, the framework binds to `127.0.0.1` internally and only ng
 
 **vLLM/SGLang validation errors on Mac** — Use Ollama or llama.cpp on Apple Silicon.
 
-**Port already in use** — Ports are auto-adjusted to the next free port during `generate` (a warning is printed). When **nginx is enabled**, framework ports are internal to Docker only — a host Ollama on `11434` does not force the container to move ports. When **nginx is disabled**, host port conflicts bump the published port and `OLLAMA_HOST` stays in sync. When running **multiple frameworks** (Ollama + vLLM + …), each service gets its default port (`11434`, `8000`, `8080`, `30000`) or the next free one if that port is taken. `/test` and `ACCESS.md` read the actual port from `docker-compose.yaml`.
+**Port already in use** — Ports are auto-adjusted to the next free value during `generate` (warnings are printed). Reserved ports include other profiles' nginx and provider listen ports, so running two Ollama stacks yields `11434` and `11435`. `/test` and `ACCESS.md` read the actual port from `docker-compose.yaml`.
 
-**Cannot reach the API from outside** — Use the **Cloudflare tunnel** URL (`https://….trycloudflare.com`) or ensure the **public IP** port is allowed in the host firewall and forwarded on the router. Do not use `192.168.x.x` from outside your LAN. The `openai` / `ollama` lines in the TUI follow public IP (or LAN if public IP could not be detected).
+**Running multiple stacks** — Use distinct `profile_name` values in Full mode (or save separate YAML profiles). Each instance has its own output folder and Docker project. Stop one with `/stop my-profile` or `local-llm-setup stop --config llm_local/profiles/my-profile.yaml`; stop all with `/stop` → **Stop all** or `local-llm-setup stop --all`.
 
-**Stale tunnel URL** — Cloudflare quick-tunnel URLs change every time `local-llm-tunnel` restarts. Run `docker logs local-llm-tunnel 2>&1 | grep trycloudflare` or redeploy to refresh `ACCESS.md`.
+**Stale tunnel URL** — Cloudflare quick-tunnel URLs change every time the tunnel container restarts. Run `docker logs local-llm-{profile}-tunnel 2>&1 | grep trycloudflare` or redeploy to refresh `ACCESS.md`.
 
 **`401 Unauthorized` on `/api/*` or `/v1/*`** — nginx API key auth is enabled. Pass `X-API-Key` or `Authorization: Bearer` with the key from `llm_local/output/api_keys.map`. OpenAI SDK users set `api_key=` to that value. Regenerate nginx with `/deploy` after upgrading if Bearer auth was added recently.
 
-**`502 Bad Gateway` on `/api/*` while `/health` is ok** — nginx is up but cannot reach the LLM backend. Regenerate and redeploy so `docker-compose.yaml` and `nginx.conf` use the same Ollama port (`OLLAMA_HOST: 0.0.0.0:<port>` must match the upstream in `nginx.conf`). Confirm with `docker exec local-llm-nginx wget -qO- http://ollama:11434/api/tags` (replace `11434` with your configured port) and check `docker logs local-llm-ollama` if the container is crashing (RAM/GPU).
+**`502 Bad Gateway` on `/api/*` while `/health` is ok** — nginx is up but cannot reach the LLM backend. Regenerate and redeploy so `docker-compose.yaml` and `nginx.conf` use the same provider port (`OLLAMA_HOST: 0.0.0.0:<port>` must match the upstream in `nginx.conf`). Confirm with `docker exec local-llm-{profile}-nginx wget -qO- http://ollama:11434/api/tags` (replace `11434` with your configured port) and check `docker logs local-llm-{profile}-ollama` if the container is crashing (RAM/GPU).
+
+**Cannot reach the API from outside** — Use the **Cloudflare tunnel** URL (`https://….trycloudflare.com`) or ensure the **public IP** port is allowed in the host firewall and forwarded on the router. Do not use `192.168.x.x` from outside your LAN. The `openai` / `ollama` lines in the TUI follow public IP (or LAN if public IP could not be detected).
 
 **Gated Hugging Face models** — Set `HF_TOKEN` in the wizard or `.env`.
 

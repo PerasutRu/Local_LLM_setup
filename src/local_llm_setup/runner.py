@@ -11,7 +11,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from local_llm_setup.models.config import Framework, SetupConfig
+from local_llm_setup.paths import compose_project_name, project_name_for_output_dir
 from local_llm_setup.ports import apply_compose_ports
+from local_llm_setup.renderers.compose import tunnel_container_name
+from local_llm_setup.instances import (
+    any_container_running,
+    compose_project_candidates,
+    container_names_from_compose,
+    list_running_instances,
+)
 from local_llm_setup.renderers import normalize_access
 from local_llm_setup.urls import (
     AccessUrls,
@@ -127,6 +135,44 @@ def _compose_base() -> list[str]:
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         pass
     return ["docker-compose"]
+
+
+def _compose_cmd(
+    output_dir: Path,
+    *args: str,
+    config: SetupConfig | None = None,
+    project: str | None = None,
+) -> list[str]:
+    """Build docker compose argv with an isolated project name."""
+    if project is None:
+        project = (
+            compose_project_name(config.profile_name)
+            if config is not None
+            else project_name_for_output_dir(output_dir)
+        )
+    compose_file = output_dir / "docker-compose.yaml"
+    base = [*_compose_base(), "-p", project, "-f", str(compose_file), *args]
+    return base
+
+
+def _stop_containers_by_name(
+    names: list[str],
+    *,
+    remove_volumes: bool,
+    on_output: Callable[[str], None] | None,
+) -> list[DeployStep]:
+    steps: list[DeployStep] = []
+    for name in names:
+        if not any_container_running([name]):
+            continue
+        step = _run(["docker", "stop", "-t", "15", name], Path.cwd(), timeout=30, on_output=on_output)
+        steps.append(step)
+        rm_cmd = ["docker", "rm", "-f", name]
+        steps.append(_run(rm_cmd, Path.cwd(), timeout=30, on_output=on_output))
+    if remove_volumes:
+        for name in names:
+            _ = name  # volumes removed via compose down when project matches
+    return steps
 
 
 def _announce(
@@ -263,18 +309,19 @@ def _wait_for_ollama(
 
 def _wait_for_tunnel_url(
     *,
+    container_name: str,
     timeout: int = 90,
     on_output: Callable[[str], None] | None = None,
 ) -> str | None:
     """Read Cloudflare quick-tunnel URL from container logs."""
-    logs_cmd = ["docker", "logs", "local-llm-tunnel"]
+    logs_cmd = ["docker", "logs", container_name]
     if on_output:
         on_output(f"[dim]$ {format_shell_command(logs_cmd)}[/dim]")
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
             result = subprocess.run(
-                ["docker", "logs", "local-llm-tunnel"],
+                logs_cmd,
                 capture_output=True,
                 text=True,
                 timeout=15,
@@ -305,7 +352,7 @@ def deploy(
     if on_output:
         on_output(f"[#c9a227]deploy[/] · {out_dir}")
 
-    compose = _compose_base()
+    compose = _compose_cmd(out_dir, config=config)
     steps: list[DeployStep] = []
     ollama_models = [fc.model.name for fc in config.frameworks if fc.framework == Framework.OLLAMA]
     total = (1 if pull else 0) + 1 + (1 if ollama_models else 0) + len(ollama_models)
@@ -370,7 +417,10 @@ def deploy(
             on_status("Waiting for public tunnel URL...")
         if on_output:
             on_output("[dim]  waiting for Cloudflare tunnel...[/dim]")
-        tunnel_url = _wait_for_tunnel_url(on_output=on_output)
+        tunnel_url = _wait_for_tunnel_url(
+            container_name=tunnel_container_name(config),
+            on_output=on_output,
+        )
         if tunnel_url:
             access_urls = enrich_access_urls(config, access_urls, tunnel_url=tunnel_url)
             if on_output:
@@ -400,6 +450,7 @@ def deploy(
 def stop_stack(
     output_dir: Path,
     *,
+    config: SetupConfig | None = None,
     remove_volumes: bool = False,
     on_output: Callable[[str], None] | None = None,
     on_status: Callable[[str], None] | None = None,
@@ -413,30 +464,59 @@ def stop_stack(
     if on_output:
         on_output(f"[#c9a227]stop[/] · {out_dir}")
 
-    compose = _compose_base()
+    containers = container_names_from_compose(compose_file)
+    if containers and not any_container_running(containers):
+        if on_output:
+            on_output("[dim]No running containers for this stack.[/dim]")
+        return DeployResult(success=True, steps=[])
+
     steps: list[DeployStep] = []
     total = 2
     step_no = 0
+    stopped = False
 
-    step_no += 1
-    _announce(on_output, on_status, step_no, total, "Checking running containers")
-    ps_step = _run([*compose, "ps"], out_dir, timeout=60, on_output=on_output)
-    steps.append(ps_step)
+    for project in compose_project_candidates(out_dir, config):
+        compose = _compose_cmd(out_dir, config=config, project=project)
+        step_no += 1
+        if step_no == 1:
+            _announce(on_output, on_status, step_no, total, f"Checking containers (project {project})")
+        ps_step = _run([*compose, "ps"], out_dir, timeout=60, on_output=on_output)
+        steps.append(ps_step)
 
-    step_no += 1
-    label = "Stopping containers (docker compose down -v)" if remove_volumes else "Stopping containers (docker compose down)"
-    _announce(on_output, on_status, step_no, total, label)
-    down_cmd = [*compose, "down"]
-    if remove_volumes:
-        down_cmd.append("-v")
-    step = _run(down_cmd, out_dir, timeout=120, on_output=on_output)
-    steps.append(step)
-    if not step.ok:
+        label = (
+            "Stopping containers (docker compose down -v)"
+            if remove_volumes
+            else "Stopping containers (docker compose down)"
+        )
+        if step_no == 1:
+            _announce(on_output, on_status, 2, total, label)
+        down_cmd = [*compose, "down"]
+        if remove_volumes:
+            down_cmd.append("-v")
+        step = _run(down_cmd, out_dir, timeout=120, on_output=on_output)
+        steps.append(step)
+        if step.ok and (not containers or not any_container_running(containers)):
+            stopped = True
+            break
+
+    if not stopped and containers and any_container_running(containers):
+        if on_output:
+            on_output("[yellow]compose down missed containers — stopping by name[/yellow]")
+        steps.extend(
+            _stop_containers_by_name(
+                containers,
+                remove_volumes=remove_volumes,
+                on_output=on_output,
+            )
+        )
+        stopped = not any_container_running(containers)
+
+    if not stopped:
         _record_run(out_dir, "stop", steps, on_output)
         return DeployResult(
             success=False,
             steps=steps,
-            error=step.stderr or step.stdout or "docker compose down failed",
+            error="Could not stop all containers for this stack",
         )
 
     if on_status:
@@ -446,6 +526,51 @@ def stop_stack(
         on_output("[bold green]✓ Stack stopped[/bold green]")
 
     _record_run(out_dir, "stop", steps, on_output)
+    return DeployResult(success=True, steps=steps)
+
+
+def stop_all_stacks(
+    *,
+    remove_volumes: bool = False,
+    on_output: Callable[[str], None] | None = None,
+    on_status: Callable[[str], None] | None = None,
+) -> DeployResult:
+    """Stop every running instance."""
+    from local_llm_setup.profiles import load_profile
+
+    running = list_running_instances()
+    if not running:
+        if on_output:
+            on_output("[dim]No running stacks to stop.[/dim]")
+        return DeployResult(success=True, steps=[])
+
+    if on_output:
+        on_output(f"[#c9a227]stop all[/] · {len(running)} instance(s)")
+
+    steps: list[DeployStep] = []
+    errors: list[str] = []
+    for inst in running:
+        config = None
+        if inst.profile_path.is_file():
+            try:
+                config = load_profile(inst.profile_path)
+            except OSError:
+                config = None
+        if on_output:
+            on_output(f"\n[bold #c9a227]→ {inst.profile_name}[/bold #c9a227]")
+        result = stop_stack(
+            inst.output_dir,
+            config=config,
+            remove_volumes=remove_volumes,
+            on_output=on_output,
+            on_status=on_status,
+        )
+        steps.extend(result.steps)
+        if not result.success:
+            errors.append(f"{inst.profile_name}: {result.error or 'stop failed'}")
+
+    if errors:
+        return DeployResult(success=False, steps=steps, error="; ".join(errors))
     return DeployResult(success=True, steps=steps)
 
 

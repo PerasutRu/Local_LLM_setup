@@ -163,6 +163,14 @@ ChoiceItem.checked {
     margin-top: 1;
 }
 
+#command-suggest {
+    color: #aaaaaa;
+    height: auto;
+    margin-top: 1;
+    padding: 0 0 0 1;
+    border-left: solid #333333;
+}
+
 Input {
     margin: 1 0;
     border: solid #444444;

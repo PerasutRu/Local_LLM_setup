@@ -89,7 +89,9 @@ def test_prepare_config_syncs_ollama_host_into_compose_and_nginx():
     def fake_free(port: int, host: str = "127.0.0.1") -> bool:
         return port != 11434
 
-    with patch("local_llm_setup.ports.is_port_free", side_effect=fake_free):
+    with patch("local_llm_setup.ports.is_port_free", side_effect=fake_free), patch(
+        "local_llm_setup.renderers.collect_reserved_ports", return_value=set()
+    ):
         prepared, _ = prepare_config(config)
 
     compose = render_compose(prepared)
@@ -154,7 +156,7 @@ def test_multi_framework_duplicate_ports_assign_canonical_defaults():
     assert ports[Framework.SGLANG] == 30000
     assert ports[Framework.LLAMACPP] == 8080
     assert len(warnings) == 1
-    assert "another framework" in warnings[0]
+    assert "another instance" in warnings[0]
 
 
 def test_multi_framework_default_ports_do_not_conflict():
