@@ -78,7 +78,18 @@ def render_nginx_conf(config: SetupConfig) -> str:
     map_block = ""
     if ngx.api_key_auth:
         map_block = """
-map $http_x_api_key $api_key_valid {
+map $http_authorization $auth_bearer_token {
+    default "";
+    "~^Bearer\\s+(.+)$" $1;
+    "~^bearer\\s+(.+)$" $1;
+}
+
+map $http_x_api_key $api_key_to_check {
+    default $http_x_api_key;
+    ""      $auth_bearer_token;
+}
+
+map $api_key_to_check $api_key_valid {
     default 0;
     include /etc/nginx/api_keys.map;
 }

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import shlex
 import socket
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from ipaddress import ip_address
+from pathlib import Path
 
 from local_llm_setup.models.config import Framework, SetupConfig
 
@@ -99,37 +101,97 @@ def _chat_payload(model: str, *, ollama: bool = False) -> str:
     return json.dumps(body, ensure_ascii=False)
 
 
+def _read_api_key_from_map(path: Path) -> str | None:
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if stripped.startswith('"'):
+                end = stripped.find('"', 1)
+                if end > 1:
+                    return stripped[1:end]
+    except OSError:
+        return None
+    return None
+
+
+def resolve_api_key(config: SetupConfig, output_dir: Path | str | None = None) -> str | None:
+    """Return the deployed API key when nginx auth is enabled."""
+    if not config.nginx.enabled or not config.nginx.api_key_auth:
+        return None
+
+    out = Path(output_dir or config.output_dir)
+    map_path = out / "api_keys.map"
+    if map_path.is_file():
+        key = _read_api_key_from_map(map_path)
+        if key:
+            return key
+
+    if config.nginx.api_keys:
+        return config.nginx.api_keys[0].key
+    return None
+
+
+def _curl_command(
+    url: str,
+    *,
+    api_key: str | None = None,
+    data: str | None = None,
+    auth_style: str = "x-api-key",
+) -> str:
+    parts = ["curl", "-sSf"]
+    if api_key:
+        if auth_style == "bearer":
+            parts.extend(["-H", f"Authorization: Bearer {api_key}"])
+        else:
+            parts.extend(["-H", f"X-API-Key: {api_key}"])
+    if data is not None:
+        parts.extend(["-d", data])
+    parts.append(url)
+    return shlex.join(parts)
+
+
 def build_curl_test_commands(
     config: SetupConfig,
     *,
     base: str | None = None,
     host: str = "127.0.0.1",
     port: int = 8080,
+    output_dir: Path | str | None = None,
 ) -> list[str]:
     """Build copy-paste curl commands for health, models, and chat."""
     fc = config.frameworks[0]
     model = fc.model.name or "tinyllama:1.1b"
     base_url = (base or f"http://{host}:{port}").rstrip("/")
+    api_key = resolve_api_key(config, output_dir)
     cmds: list[str] = []
 
     if config.nginx.enabled:
-        cmds.append(f"curl -sSf {base_url}/health")
+        cmds.append(_curl_command(f"{base_url}/health"))
 
     if fc.framework == Framework.OLLAMA:
-        cmds.append(f"curl -sSf {base_url}/api/tags")
+        cmds.append(_curl_command(f"{base_url}/api/tags", api_key=api_key))
     else:
-        cmds.append(f"curl -sSf {base_url}/")
+        cmds.append(_curl_command(f"{base_url}/", api_key=api_key))
 
     if fc.framework in (Framework.OLLAMA, Framework.VLLM, Framework.SGLANG):
-        cmds.append(f"curl -sSf {base_url}/v1/models")
+        cmds.append(_curl_command(f"{base_url}/v1/models", api_key=api_key, auth_style="bearer"))
 
     if fc.framework == Framework.OLLAMA:
         payload = _chat_payload(model, ollama=True)
-        cmds.append(f"curl -sSf {base_url}/api/chat -d '{payload}'")
+        cmds.append(_curl_command(f"{base_url}/api/chat", api_key=api_key, data=payload))
 
     if fc.framework in (Framework.OLLAMA, Framework.VLLM, Framework.SGLANG, Framework.LLAMACPP):
         payload = _chat_payload(model)
-        cmds.append(f"curl -sSf {base_url}/v1/chat/completions -d '{payload}'")
+        cmds.append(
+            _curl_command(
+                f"{base_url}/v1/chat/completions",
+                api_key=api_key,
+                data=payload,
+                auth_style="bearer",
+            )
+        )
 
     return cmds
 
@@ -148,14 +210,19 @@ def enrich_access_urls(
         external_host, lan_ip, uses_public_ip = _external_hosts()
         if external_host:
             updates["test_commands"] = build_curl_test_commands(
-                config, host=external_host, port=ngx.listen_port
+                config,
+                host=external_host,
+                port=ngx.listen_port,
+                output_dir=config.output_dir,
             )
 
     if tunnel_url:
         base = tunnel_url.rstrip("/")
         updates["tunnel_url"] = tunnel_url
         updates["tunnel_openai_base_url"] = f"{base}/v1"
-        updates["tunnel_test_commands"] = build_curl_test_commands(config, base=base)
+        updates["tunnel_test_commands"] = build_curl_test_commands(
+            config, base=base, output_dir=config.output_dir
+        )
         updates["primary_url"] = tunnel_url
 
     if not updates:
@@ -200,7 +267,9 @@ def build_access_urls(config: SetupConfig) -> AccessUrls:
             openai_base_url=openai_base,
             api_hint=_api_hint(fc.framework),
             external=True,
-            test_commands=build_curl_test_commands(config, host=test_host, port=test_port),
+            test_commands=build_curl_test_commands(
+                config, host=test_host, port=test_port, output_dir=config.output_dir
+            ),
             service_urls=service_urls,
             uses_public_ip=uses_public_ip,
             private_lan_url=private_lan_url,
@@ -234,7 +303,9 @@ def build_access_urls(config: SetupConfig) -> AccessUrls:
         openai_base_url=openai_base,
         api_hint=_api_hint(fc.framework),
         external=external,
-        test_commands=build_curl_test_commands(config, host=test_host, port=fc.port),
+        test_commands=build_curl_test_commands(
+            config, host=test_host, port=fc.port, output_dir=config.output_dir
+        ),
         service_urls=service_urls,
         uses_public_ip=uses_public_ip and external,
         private_lan_url=private_lan_url,
@@ -270,7 +341,10 @@ def format_access_lines(urls: AccessUrls, *, markup: bool = True) -> list[str]:
         lines.append(f"  health:  {urls.health_url}")
 
     if urls.openai_base_url:
-        lines.append(f"  openai:  {urls.openai_base_url}  [dim](ใส่ใน OpenAI client — ไม่ต้องต่อ /models)[/dim]")
+        lines.append(
+            f"  openai:  {urls.openai_base_url}  "
+            f"[dim](OpenAI client — api_key = Bearer token · ไม่ต้องต่อ /models)[/dim]"
+        )
     if urls.ollama_base_url:
         lines.append(f"  ollama:  {urls.ollama_base_url}  [dim](base URL สำหรับ Ollama API)[/dim]")
 

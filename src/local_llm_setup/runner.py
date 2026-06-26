@@ -449,8 +449,9 @@ def stop_stack(
 
 def _runtime_test_commands(config: SetupConfig) -> list[str]:
     """Build curl probes on localhost using ports already synced from compose."""
+    out_dir = Path(config.output_dir).resolve()
     port = config.nginx.listen_port if config.nginx.enabled else config.frameworks[0].port
-    return build_curl_test_commands(config, host="127.0.0.1", port=port)
+    return build_curl_test_commands(config, host="127.0.0.1", port=port, output_dir=out_dir)
 
 
 def run_curl_tests(

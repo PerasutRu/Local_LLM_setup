@@ -37,6 +37,7 @@ def test_render_nginx_and_api_keys():
     conf = render_nginx_conf(setup)
     assert "proxy_pass" in conf
     assert "api_keys.map" in conf
+    assert "auth_bearer_token" in conf
     amap = render_api_keys_map(setup)
     assert "test-key-123" in amap
 

@@ -95,3 +95,20 @@ def test_compose_without_nginx_keeps_framework_ports():
     compose = render_compose(setup)
     assert "127.0.0.1:11434:11434" in compose
     assert "networks:" in compose
+
+
+def test_nginx_api_key_auth_accepts_bearer_and_x_api_key():
+    config = SetupConfig(
+        frameworks=[
+            FrameworkConfig(
+                framework=Framework.OLLAMA,
+                model=ModelConfig(name="llama3.2"),
+                port=11434,
+            )
+        ],
+        nginx=NginxConfig(enabled=True, listen_port=8080, api_key_auth=True),
+    )
+    conf = render_nginx_conf(config)
+    assert "auth_bearer_token" in conf
+    assert "api_key_to_check" in conf
+    assert 'include /etc/nginx/api_keys.map' in conf

@@ -9,7 +9,7 @@ TUI wizard for hosting local LLMs with **Ollama**, **vLLM**, **llama.cpp**, and 
 - Quick or **full** configuration — every model, runtime, Docker, and nginx option per provider
 - Model validation (Ollama registry, Hugging Face, GGUF for llama.cpp)
 - Capability flags: vision, audio, tool calling, speculative decoding (MTP)
-- Optional nginx reverse proxy with API key auth and Cloudflare quick tunnel
+- Optional nginx reverse proxy with API key auth (`X-API-Key` or `Authorization: Bearer`) and Cloudflare quick tunnel
 - Generate & deploy from TUI or CLI (`generate --run`, `run`, `stop`)
 - Access URLs for localhost, **public IP** (auto-detected), private LAN, and Cloudflare tunnel — plus curl smoke tests
 - Save/load YAML profiles
@@ -132,7 +132,36 @@ Client → host:8080 (nginx) → ollama:11434 (internal)
 Client → https://….trycloudflare.com (cloudflared) → nginx → ollama
 ```
 
-**`/test` slash command** — curl smoke tests always hit `127.0.0.1` on the port published in `output/docker-compose.yaml` (not stale wizard state).
+**`/test` slash command** — curl smoke tests hit `127.0.0.1` on the port from `output/docker-compose.yaml`. When API key auth is on, `/test` reads the key from `output/api_keys.map` and sends `X-API-Key` (Ollama native routes) or `Authorization: Bearer` (`/v1/*` routes, same as OpenAI clients).
+
+### API key auth (nginx)
+
+When **Yes nginx — with API key auth** is selected, nginx accepts either header (same key value):
+
+| Header | Typical client |
+|--------|----------------|
+| `X-API-Key: <key>` | curl, Ollama CLI, custom HTTP |
+| `Authorization: Bearer <key>` | OpenAI Python SDK, Cursor, LangChain (`api_key=` / `OPENAI_API_KEY`) |
+
+The key is printed after deploy under `api_keys:` and saved in `output/api_keys.map`. `/health` does not require a key.
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://YOUR_HOST:8081/v1",
+    api_key="YOUR_KEY_FROM_api_keys.map",
+)
+client.chat.completions.create(model="tinyllama:1.1b", messages=[{"role": "user", "content": "hi"}])
+```
+
+```bash
+# curl — Ollama native
+curl -H "X-API-Key: YOUR_KEY" http://127.0.0.1:8081/api/tags
+
+# curl — OpenAI-compatible
+curl -H "Authorization: Bearer YOUR_KEY" http://127.0.0.1:8081/v1/models
+```
 
 Example checks from another machine:
 
@@ -157,7 +186,7 @@ Press `/` in the wizard to open the command bar:
 | `/help` | List commands |
 | `/providers` | Switch Ollama / vLLM |
 | `/deploy` | Regenerate and start the stack |
-| `/test` | Run curl smoke tests against the running API |
+| `/test` | Run curl smoke tests (uses compose port + `api_keys.map` when auth is on) |
 | `/stop` | Stop containers (keep volumes) |
 | `/delete-container` | Stop and remove containers + volumes |
 | `/doctor` | Jump back to Host Doctor |
@@ -295,6 +324,8 @@ When nginx is enabled, the framework binds to `127.0.0.1` internally and only ng
 **Cannot reach the API from outside** — Use the **Cloudflare tunnel** URL (`https://….trycloudflare.com`) or ensure the **public IP** port is allowed in the host firewall and forwarded on the router. Do not use `192.168.x.x` from outside your LAN. The `openai` / `ollama` lines in the TUI follow public IP (or LAN if public IP could not be detected).
 
 **Stale tunnel URL** — Cloudflare quick-tunnel URLs change every time `local-llm-tunnel` restarts. Run `docker logs local-llm-tunnel 2>&1 | grep trycloudflare` or redeploy to refresh `ACCESS.md`.
+
+**`401 Unauthorized` on `/api/*` or `/v1/*`** — nginx API key auth is enabled. Pass `X-API-Key` or `Authorization: Bearer` with the key from `output/api_keys.map`. OpenAI SDK users set `api_key=` to that value. Regenerate nginx with `/deploy` after upgrading if Bearer auth was added recently.
 
 **Gated Hugging Face models** — Set `HF_TOKEN` in the wizard or `.env`.
 

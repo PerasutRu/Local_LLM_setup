@@ -5,6 +5,7 @@ from __future__ import annotations
 from unittest.mock import patch
 
 from local_llm_setup.models.config import (
+    ApiKeyEntry,
     Framework,
     FrameworkConfig,
     ModelConfig,
@@ -18,6 +19,7 @@ from local_llm_setup.urls import (
     enrich_access_urls,
     format_access_lines,
     render_access_md,
+    resolve_api_key,
 )
 
 
@@ -184,3 +186,44 @@ def test_is_public_ipv4_helper():
     assert _is_public_ipv4("192.168.1.1") is False
     assert _is_public_ipv4("10.0.0.1") is False
     assert _is_public_ipv4("not-an-ip") is False
+
+
+def test_curl_test_commands_include_api_key(tmp_path):
+    (tmp_path / "api_keys.map").write_text(
+        '"secret-key-abc" 1;  # default\n',
+        encoding="utf-8",
+    )
+    config = SetupConfig(
+        output_dir=tmp_path,
+        frameworks=[
+            FrameworkConfig(
+                framework=Framework.OLLAMA,
+                model=ModelConfig(name="tinyllama:1.1b"),
+                port=11434,
+            )
+        ],
+        nginx=NginxConfig(enabled=True, listen_port=8080, api_key_auth=True),
+    )
+    cmds = build_curl_test_commands(config, host="127.0.0.1", port=8080, output_dir=tmp_path)
+    assert cmds[0] == "curl -sSf http://127.0.0.1:8080/health"
+    assert "X-API-Key: secret-key-abc" in cmds[1]
+    assert "/api/tags" in cmds[1]
+    assert "Authorization: Bearer secret-key-abc" in cmds[2]
+    assert "/v1/models" in cmds[2]
+
+
+def test_resolve_api_key_prefers_deployed_map(tmp_path):
+    (tmp_path / "api_keys.map").write_text(
+        '"deployed-key" 1;  # default\n',
+        encoding="utf-8",
+    )
+    config = SetupConfig(
+        output_dir=tmp_path,
+        frameworks=[FrameworkConfig(framework=Framework.OLLAMA, model=ModelConfig(name="x"))],
+        nginx=NginxConfig(
+            enabled=True,
+            api_key_auth=True,
+            api_keys=[ApiKeyEntry(key="stale-wizard-key", label="default")],
+        ),
+    )
+    assert resolve_api_key(config, tmp_path) == "deployed-key"
