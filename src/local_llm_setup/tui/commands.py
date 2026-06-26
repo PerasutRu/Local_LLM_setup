@@ -17,6 +17,7 @@ class SlashCommand:
 SLASH_COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand("help", "แสดงคำสั่งทั้งหมด"),
     SlashCommand("instances", "ดู/เลือก profile — แก้ไข, deploy, stop", aliases=("profiles", "list")),
+    SlashCommand("delete-profile", "ลบ profile config — เลือกหลายตัวหรือลบทั้งหมด", aliases=("remove-profile",)),
     SlashCommand("providers", "เลือก provider (ollama, vllm, …)"),
     SlashCommand("deploy", "generate และ start stack จาก profile ปัจจุบัน"),
     SlashCommand("stop", "หยุด stack — เลือก instance หรือหยุดทั้งหมด (/stop ชื่อ)"),
@@ -61,32 +62,22 @@ class CommandMatch:
     description: str
 
 
-def _command_matches() -> list[CommandMatch]:
-    rows: list[CommandMatch] = []
-    seen: set[str] = set()
-    for sc in SLASH_COMMANDS:
-        if sc.name not in seen:
-            seen.add(sc.name)
-            rows.append(CommandMatch(sc.name, f"/{sc.name}", sc.description))
-        for alias in sc.aliases:
-            if alias not in seen:
-                seen.add(alias)
-                rows.append(CommandMatch(sc.name, f"/{alias}", sc.description))
-    return rows
+def _command_match(sc: SlashCommand) -> CommandMatch:
+    return CommandMatch(sc.name, f"/{sc.name}", sc.description)
 
 
 def match_commands(query: str) -> list[CommandMatch]:
-    """Filter slash commands by partial input."""
+    """Filter slash commands by partial input (aliases resolve to canonical names)."""
     stripped = query.strip()
     if not stripped.startswith("/"):
         return []
     name, _ = parse_command(query)
     token = name or stripped.lstrip("/").lower()
-    matches = [
-        row
-        for row in _command_matches()
-        if row.canonical.startswith(token) or row.display.lstrip("/").startswith(token)
-    ]
+    matches: list[CommandMatch] = []
+    for sc in SLASH_COMMANDS:
+        names = (sc.name, *sc.aliases)
+        if any(candidate.startswith(token) for candidate in names):
+            matches.append(_command_match(sc))
     return matches
 
 

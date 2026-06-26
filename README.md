@@ -15,9 +15,9 @@ TUI wizard for hosting local LLMs with **Ollama**, **vLLM**, **llama.cpp**, and 
 - Generate & deploy from TUI or CLI (`generate --run`, `run`, `stop`)
 - **Multiple isolated stacks** — one profile per instance, output under `llm_local/output/{profile_name}/`, unique Docker project/container names
 - **Cross-instance port allocation** — auto-avoid conflicts for providers (Ollama, vLLM, …), nginx, and Cloudflare tunnel sidecars
-- **Instance management** — list, edit, deploy, and stop stacks independently (`/instances`, `local-llm-setup instances`)
+- **Instance management** — list, edit, deploy, stop, and delete profiles (`/instances`, `/delete-profile`, `local-llm-setup instances`)
 - Access URLs for localhost, **public IP** (auto-detected), private LAN, and Cloudflare tunnel — plus curl smoke tests
-- Save/load YAML profiles
+- Save/load/delete YAML profiles
 - One-line server install and uninstall via `curl | bash` ([Hermes-style](https://hermes-agent.nousresearch.com/))
 
 ## Quick start
@@ -188,17 +188,18 @@ docker logs local-llm-tunnel 2>&1 | grep trycloudflare   # current tunnel URL
 
 ## TUI slash commands
 
-Press `/` to focus the command bar and insert `/`. The **suggestion panel** stays hidden until the input starts with `/`; then it lists matching commands with descriptions. Use **↑↓** to highlight, **Tab** to autocomplete (press Tab again to cycle matches), **Enter** to run. Without a leading `/`, Tab moves focus to the next widget as usual.
+Press `/` to focus the command bar and insert `/`. The **suggestion panel** stays hidden until the input starts with `/`; then it lists matching commands with descriptions (each command appears once — aliases such as `/profiles` autocomplete to `/instances`). Use **↑↓** to highlight, **Tab** to autocomplete (press Tab again to cycle matches), **Enter** to run. Without a leading `/`, Tab moves focus to the next widget as usual.
 
 | Command | Action |
 |---------|--------|
 | `/help` | List all commands |
-| `/instances` | List profiles — edit, deploy, or stop per instance (`/profiles`, `/list`) |
+| `/instances` | List profiles — edit, deploy, or stop per instance (aliases: `/profiles`, `/list`) |
+| `/delete-profile` | Delete saved profile YAML + output folder — multi-select, delete all, or `/delete-profile name …` (alias: `/remove-profile`) |
 | `/providers` | Switch Ollama / vLLM |
 | `/deploy` | Regenerate and start the current profile's stack |
 | `/test` | Run curl smoke tests (uses compose port + `api_keys.map` when auth is on) |
 | `/stop` | Pick instance to stop, stop all running, or `/stop my-profile` |
-| `/delete-container` | Same picker as `/stop` but removes volumes (`/delete`) |
+| `/delete-container` | Same picker as `/stop` but removes volumes (`/delete` — not profile configs) |
 | `/doctor` | Jump back to Host Doctor |
 
 Press `s` to open the **stop picker** (stop all or choose one instance).
@@ -220,6 +221,7 @@ llm_local/
 - **Profile name** → subfolder name → Docker project `local-llm-{profile}` and containers `local-llm-{profile}-ollama`, etc.
 - Ports are reserved across other profiles so two Ollama stacks get `11434` and `11435`, nginx `8080` and `8081`, and so on.
 - Edit a profile via `/instances` → **Edit**, change settings, then **Generate & deploy** or `/deploy` — only that stack restarts.
+- Delete profiles via `/delete-profile` or `/instances` → **Delete profiles…** — **Space** to select multiple, **Enter** to confirm. Running stacks are stopped first; YAML and `llm_local/output/{profile_name}/` are removed. `/delete` removes Docker volumes only (`/delete-container`), not saved configs.
 
 ### Deploy log (Pretty + Copy)
 

@@ -21,6 +21,21 @@ def test_match_commands_filters():
     assert "stop" in names
 
 
+def test_match_commands_alias_resolves_to_canonical():
+    matches = match_commands("/profiles")
+    assert len(matches) == 1
+    assert matches[0].canonical == "instances"
+    assert matches[0].display == "/instances"
+
+
+def test_match_commands_no_duplicate_aliases():
+    matches = match_commands("/")
+    displays = [m.display for m in matches]
+    assert displays.count("/instances") == 1
+    assert "/profiles" not in displays
+    assert "/list" not in displays
+
+
 def test_match_commands_hidden_without_slash():
     assert match_commands("") == []
     assert match_commands("help") == []

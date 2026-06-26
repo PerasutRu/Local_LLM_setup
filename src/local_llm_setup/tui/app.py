@@ -31,7 +31,7 @@ from local_llm_setup.models.config import (
 )
 from local_llm_setup.paths import OUTPUT_DIR, normalize_output_dir
 from local_llm_setup.instances import list_instances, list_running_instances
-from local_llm_setup.profiles import load_profile, save_profile
+from local_llm_setup.profiles import delete_profile, load_profile, save_profile
 from local_llm_setup.renderers import generate, prepare_config
 from local_llm_setup.runner import DeployResult, deploy, run_curl_tests, stop_all_stacks, stop_stack
 from local_llm_setup.urls import build_access_urls, format_access_lines
@@ -322,6 +322,7 @@ class LocalLLMSetupApp(App):
         self._deploy_succeeded = False
         self._remove_volumes_on_stop = False
         self._stop_target: str = "current"
+        self._delete_targets: list[str] = []
         self._command_suggest_index = 0
         self._editing_instance: str | None = None
         self._command_aliases = {
@@ -1017,6 +1018,74 @@ class LocalLLMSetupApp(App):
             on_status=on_status,
         )
 
+    def _do_delete_profiles(self) -> DeployResult:
+        def on_output(line: str) -> None:
+            def _write() -> None:
+                if self._deploy_log is not None:
+                    self._deploy_log.write(line)
+                    self._deploy_log.scroll_end(animate=False)
+
+            self.call_from_thread(_write)
+
+        def on_status(msg: str) -> None:
+            self.call_from_thread(self._update_footer, msg, "please wait")
+
+        instances = {inst.profile_name: inst for inst in list_instances()}
+        errors: list[str] = []
+        deleted_count = 0
+
+        for name in self._delete_targets:
+            inst = instances.get(name)
+            if inst is None:
+                errors.append(f"{name}: not found")
+                continue
+
+            if on_output:
+                on_output(f"\n[bold #c9a227]→ {name}[/bold #c9a227]")
+
+            if inst.status == "running":
+                config = None
+                if inst.profile_path.is_file():
+                    try:
+                        config = load_profile(inst.profile_path)
+                    except OSError:
+                        config = None
+                stop_result = stop_stack(
+                    inst.output_dir,
+                    config=config,
+                    remove_volumes=False,
+                    on_output=on_output,
+                    on_status=on_status,
+                )
+                if not stop_result.success:
+                    errors.append(f"{name}: stop failed — {stop_result.error or 'unknown error'}")
+                    continue
+
+            removed = delete_profile(name)
+            if not removed:
+                errors.append(f"{name}: nothing to delete")
+                continue
+
+            deleted_count += 1
+            if on_output:
+                for path in removed:
+                    on_output(f"  [dim]removed {path}[/dim]")
+
+        if on_output:
+            on_output("")
+            if errors:
+                on_output(f"[yellow]Deleted {deleted_count} profile(s); {len(errors)} error(s)[/yellow]")
+                for err in errors:
+                    on_output(f"  [red]{err}[/red]")
+            elif deleted_count:
+                on_output(f"[bold green]✓ Deleted {deleted_count} profile(s)[/bold green]")
+            else:
+                on_output("[dim]No profiles deleted.[/dim]")
+
+        if errors:
+            return DeployResult(success=False, error="; ".join(errors))
+        return DeployResult(success=True, steps=[])
+
     def _do_curl_test(self, config: SetupConfig) -> DeployResult:
         def on_output(line: str) -> None:
             def _write() -> None:
@@ -1141,6 +1210,8 @@ class LocalLLMSetupApp(App):
             else:
                 choices.append((f"deploy:{inst.profile_name}", f"Deploy · {inst.profile_name}"))
         choices.append(("__new__", "Create new profile →"))
+        if instances:
+            choices.append(("delete:__picker__", "Delete profiles…"))
 
         panel = self.query_one("#choices-panel", Container)
         panel.remove_children()
@@ -1247,6 +1318,66 @@ class LocalLLMSetupApp(App):
             "↑↓ Enter confirm · Esc cancel",
         )
 
+    def _show_delete_profile_picker(self) -> None:
+        instances = list_instances()
+        body = self.query_one("#step-body", VerticalScroll)
+        body.remove_children()
+        body.mount(self._section_label("delete profile · saved configs"))
+
+        if not instances:
+            body.mount(Static("  [dim]ยังไม่มี profile ที่จะลบ[/dim]", classes="skill-line"))
+            self.query_one("#choices-panel", Container).remove_children()
+            self._active_choices = None
+            self._update_footer("No profiles to delete.", "/instances · /help")
+            return
+
+        for inst in instances:
+            has_yaml = inst.profile_path.is_file()
+            detail = "yaml + output" if has_yaml and inst.status != "not_deployed" else (
+                "yaml only" if has_yaml else "output only"
+            )
+            status_color = {"running": "yellow", "stopped": "dim", "not_deployed": "dim"}.get(
+                inst.status, "white"
+            )
+            body.mount(
+                Static(
+                    f"  [#c9a227]{inst.profile_name}[/] "
+                    f"[{status_color}]{inst.status}[/{status_color}] · {detail}",
+                    classes="skill-line",
+                )
+            )
+
+        choices: list[tuple[str, str]] = [
+            ("__all__", f"Delete all ({len(instances)} profiles)"),
+        ]
+        for inst in instances:
+            choices.append((inst.profile_name, f"Delete · {inst.profile_name}"))
+        choices.append(("__cancel__", "Cancel"))
+
+        panel = self.query_one("#choices-panel", Container)
+        panel.remove_children()
+        cl = ChoiceList(choices, id="delete-profile-choice", multi=True)
+        panel.mount(cl)
+        self._active_choices = cl
+        self.call_after_refresh(cl.focus)
+        self._update_footer(
+            "Space เลือกหลาย profile · Enter ลบที่เลือก · running stack จะถูก stop ก่อน",
+            "↑↓ navigate · Esc cancel",
+        )
+
+    def _begin_delete_profiles(self, *, label: str) -> None:
+        panel = self.query_one("#choices-panel", Container)
+        panel.remove_children()
+        self._active_choices = None
+        body = self.query_one("#step-body", VerticalScroll)
+        body.remove_children()
+        body.mount(self._section_label(label))
+        self._mount_deploy_log(body)
+        if self._editing_instance in self._delete_targets:
+            self._editing_instance = None
+        self._update_footer("Deleting profiles...", "please wait")
+        self.run_worker(self._do_delete_profiles, name="delete-profiles", thread=True, exclusive=True)
+
     def _show_providers(self) -> None:
         panel = self.query_one("#choices-panel", Container)
         panel.remove_children()
@@ -1274,6 +1405,14 @@ class LocalLLMSetupApp(App):
 
         if resolved == "instances":
             self._show_instances()
+            return
+
+        if resolved == "delete-profile":
+            if args:
+                self._delete_targets = args
+                self._begin_delete_profiles(label=f"delete profile · {', '.join(args)}")
+                return
+            self._show_delete_profile_picker()
             return
 
         if resolved == "doctor":
@@ -1529,6 +1668,28 @@ class LocalLLMSetupApp(App):
             self._deploy_profile(name)
         elif action == "stop":
             self._stop_profile(name)
+        elif action == "delete" and name == "__picker__":
+            self._show_delete_profile_picker()
+
+    @on(ChoiceList.Submitted, "#delete-profile-choice")
+    def on_delete_profile_choice(self, event: ChoiceList.Submitted) -> None:
+        selected = set(event.selected_ids)
+        if not selected or "__cancel__" in selected:
+            self._update_footer("Cancelled.", "/help · /instances")
+            return
+
+        if "__all__" in selected:
+            self._delete_targets = [inst.profile_name for inst in list_instances()]
+        else:
+            self._delete_targets = sorted(selected - {"__all__", "__cancel__"})
+
+        if not self._delete_targets:
+            self._update_footer("No profiles selected.", "/delete-profile · /instances")
+            return
+
+        count = len(self._delete_targets)
+        label = "delete profile · all" if "__all__" in selected else f"delete profile · {count} selected"
+        self._begin_delete_profiles(label=label)
 
     @on(ChoiceList.Submitted, "#provider-command")
     def on_provider_command(self, event: ChoiceList.Submitted) -> None:
