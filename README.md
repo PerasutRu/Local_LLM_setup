@@ -105,7 +105,7 @@ local-llm-setup stop --all                    # stop every running instance
 local-llm-setup instances                     # list profiles + status
 ```
 
-**Full guide (Thai):** [GUIDE.md](GUIDE.md) · **Architecture:** [UML.md](UML.md)
+**Full guide (Thai):** [GUIDE.md](GUIDE.md) — install, TUI walkthrough, **Quick/Full parameter reference per provider** · **Architecture:** [UML.md](UML.md)
 
 ## CLI commands
 
@@ -264,12 +264,18 @@ Access URLs printed after deploy use the same styling (gold headings, blue links
 
 ## Configuration modes
 
-| Mode | Best for |
-|------|----------|
-| **Quick** | Fast path — model name, optional custom Docker image, capabilities, nginx on/off |
-| **Full** | Every settable option — ports, env, volumes, GPU ids, vLLM serve flags, nginx timeouts |
+| Mode | Best for | Wizard steps |
+|------|----------|--------------|
+| **Quick** | Fast path — model, optional Docker image, capabilities, nginx | Model → Capabilities → Nginx → Summary |
+| **Full** | Production tuning — ports, GPU, env, vLLM flags, nginx timeouts | Model → **Runtime & Docker** → Capabilities → Nginx → Summary |
 
-Full mode adds a **Runtime & Docker** step between Model and Capabilities. Both modes let you override the provider Docker image; leave the field empty to use the default shown in the wizard.
+**Quick** uses sensible defaults per provider (port, `bind_host`, `shm_size`, context length). Toggle **Bind to 0.0.0.0** under Capabilities to expose on LAN.
+
+**Full** adds a **Runtime & Docker** step — set `bind_host`, `port`, `publish_port`, GPU ids, volumes, etc. instead of the Quick “expose publicly” toggle.
+
+Both modes let you override the provider Docker image (Quick: Model step; Full: Runtime step). Leave empty to use the default shown in the wizard.
+
+**Full walkthrough with parameter examples (Thai):** [GUIDE.md §7 — Quick vs Full setup](GUIDE.md#7-quick-setup-vs-full-setup-แต่ละ-provider)
 
 ### Default Docker images
 
@@ -280,24 +286,96 @@ Full mode adds a **Runtime & Docker** step between Model and Capabilities. Both 
 | llama.cpp | `ghcr.io/ggerganov/llama.cpp:server` | |
 | SGLang | `lmsysorg/sglang:latest` | |
 
-Set a custom image in the TUI (Quick: Model step; Full: Runtime step) or in profile YAML as `image_tag`. Example: `ollama/ollama:0.5.4` when `latest` is incompatible with your stack.
+Set a custom image in the TUI or profile YAML as `image_tag`. Example: `ollama/ollama:0.5.4` when `latest` is incompatible.
 
-### Full mode — common fields (all providers)
+### Shared parameters (all providers)
 
-| Step | Fields |
-|------|--------|
-| Model | `model.name`, `context_length`, `quantization` (vLLM/SGLang), `tensor_parallel`, HF token |
-| Runtime | `profile_name` (→ `llm_local/output/{name}/`), `port`, `bind_host`, `image_tag`, `model_cache_host_path`, `shm_size`, `extra_env`, `extra_args` |
-| Nginx | `listen_port`, `server_name`, `bind_host`, `client_max_body_size`, `proxy_read_timeout`, CORS, cloudflared tunnel |
+| Parameter | Meaning | Default | Example |
+|-----------|---------|---------|---------|
+| `profile_name` | Instance name → output folder, Docker project, container names | `default` | `ollama-prod`, `gemma-vllm` |
+| `model.name` | Model id per provider (see below) | provider default | `llama3.2`, `meta-llama/Meta-Llama-3-8B-Instruct` |
+| `context_length` | Max context window (tokens) | `8192` | `32768`, `80000` |
+| `image_tag` | Docker image override | provider default | `vllm/vllm-openai:v0.6.3` |
+| `model_cache_host_path` | Host folder for downloaded models | `output/model-{provider}/` | `/mnt/nvme/ollama`, `/data/hf-cache` |
+| `port` | Port the service **listens on inside the container** | 11434 / 8000 / 8080 / 30000 | `8000`, `11435` |
+| `publish_port` | Host port mapped to `port` (Full mode) | same as `port` | `8002` → `8002:8000` |
+| `bind_host` | Host IP to bind | `127.0.0.1` | `0.0.0.0` (all interfaces) |
+| `shm_size` | Container shared memory | `8gb` / `16gb` | `32gb` for large models |
+| `extra_env` | Extra env vars (one `KEY=value` per line) | empty | `OLLAMA_NUM_PARALLEL=4` |
+| `extra_args` | Extra CLI args appended to serve command | empty | `--dtype auto` |
+| `gpu_count` | GPUs reserved when `gpu_device_ids` empty | `1` | `2`, `4` |
+| `gpu_device_ids` | Pin specific GPUs (comma-separated) | empty | `0`, `0,1` |
+| `ipc` | Docker IPC mode | empty | `host` (recommended for some vLLM setups) |
+| `extra_volumes` | Extra bind mounts (one per line) | empty | `/mnt/hf:/root/.cache/huggingface` |
+| `command_shell` | Bash script overriding generated start command | empty | vLLM advanced only |
 
-Provider-specific extras:
+**Capabilities:** vision, audio (vLLM only — bootstraps `vllm[audio]`), tool calling, MTP/speculative decoding (+ drafter model), and **Bind to 0.0.0.0** (Quick only).
 
-| Provider | Additional Full fields |
-|----------|------------------------|
-| **Ollama** | `OLLAMA_NUM_PARALLEL`, `OLLAMA_MODELS`, `OLLAMA_HOST` (auto-synced to `0.0.0.0:<port>` when ports are auto-adjusted; override in Full mode if needed) |
-| **vLLM** | See [vLLM production config](#vllm-production-config) below |
-| **llama.cpp** | `n_gpu_layers` (→ `--n-gpu-layers`) |
-| **SGLang** | `gpu_count`, same HF/quantization fields as vLLM |
+**Nginx (Full):** `listen_port`, `server_name`, `bind_host`, `client_max_body_size`, `proxy_read_timeout`, CORS, cloudflared tunnel, API key auth.
+
+### Provider quick reference
+
+#### Ollama
+
+| | Quick | Full extras |
+|---|-------|-------------|
+| **Model** | Ollama tag (`llama3.2`, `qwen2.5:7b`) | `context_length`, `OLLAMA_NUM_PARALLEL` |
+| **Runtime** | defaults (port `11434`, `shm_size=8gb`) | `port`, `bind_host`, `OLLAMA_MODELS`, `OLLAMA_HOST`, cache path |
+| **After deploy** | `ollama pull <model>` (skipped if already local) | same |
+
+```yaml
+# Full example — parallel requests + nginx
+profile_name: ollama-prod
+frameworks:
+  - framework: ollama
+    mode: full
+    model: { name: llama3.2, context_length: 8192 }
+    port: 11434
+    bind_host: 0.0.0.0
+    model_cache_host_path: /mnt/nvme/ollama
+    extra_env: { OLLAMA_NUM_PARALLEL: "4" }
+nginx: { enabled: true, listen_port: 8080, api_key_auth: true }
+```
+
+#### vLLM
+
+| | Quick | Full extras |
+|---|-------|-------------|
+| **Model** | Hugging Face repo (safetensors, **not GGUF**) | `quantization`, `tensor_parallel`, HF token, serve flags (see below) |
+| **Runtime** | port `8000`, `gpu_count=1`, `shm_size=16gb` | `publish_port`, `gpu_device_ids`, `ipc`, `command_shell` |
+| **Requires** | NVIDIA/AMD GPU | same |
+
+**vLLM-only model fields:** `gpu_memory_utilization`, `max_num_seqs`, `tool_call_parser`, `reasoning_parser`, `kv_cache_dtype`, `limit_mm_per_prompt`, `trust_remote_code`, `enable_prefix_caching`.
+
+**Gated models:** set `HF_TOKEN` in wizard (Full) or `.env` (Quick).
+
+#### llama.cpp
+
+| | Quick | Full extras |
+|---|-------|-------------|
+| **Model** | GGUF path in container (`/models/foo.gguf`) or URL | `context_length`, `n_gpu_layers` → `--n-gpu-layers` |
+| **Cache** | bind `./model-llamacpp` → `/models` | custom `model_cache_host_path` |
+| **GPU** | optional (CPU ok; Metal on Apple Silicon) | tune layers via `n_gpu_layers` |
+
+Place `.gguf` files in `llm_local/output/{profile}/model-llamacpp/` before deploy, or set a custom cache path.
+
+#### SGLang
+
+| | Quick | Full extras |
+|---|-------|-------------|
+| **Model** | Hugging Face repo | `quantization`, `tensor_parallel`, HF token |
+| **Runtime** | port `30000`, `gpu_count=1` | `publish_port`, `gpu_device_ids`, MTP drafter model |
+| **Requires** | GPU (no Apple Silicon, no GGUF) | same |
+
+### When to use which mode
+
+| Scenario | Recommendation |
+|----------|----------------|
+| First try / laptop dev | **Quick** + Ollama or llama.cpp |
+| Standard HF model, 1 GPU | **Quick** + vLLM or SGLang |
+| AWQ/GPTQ, multimodal, audio, pin GPU | **Full** + vLLM |
+| Multiple stacks on one host | **Full** — distinct `profile_name`, `port`, `publish_port` |
+| GGUF on CPU or Mac | **Quick/Full** + llama.cpp + `n_gpu_layers` in Full |
 
 In Full mode, use **bind_host** on the Runtime step instead of the “expose publicly” capability toggle.
 
@@ -320,9 +398,35 @@ Full mode maps to real-world `docker compose` setups (e.g. Gemma 4 multimodal wi
 
 **Example (Gemma 4 AWQ):**
 
-- Model: `cyankiwi/gemma-4-E4B-it-AWQ-INT4`, context `80000`, gpu_mem `0.3`, parsers `gemma4`, limit_mm `{"image": 4, "audio": 1}`
-- Runtime: port `8000`, publish `8002`, gpu_device_ids `0`, ipc `host`, volume for HF cache
-- Capabilities: tool calling, vision, **audio**
+| Step | Values |
+|------|--------|
+| Model | `cyankiwi/gemma-4-E4B-it-AWQ-INT4`, context `80000`, quantization `awq`, gpu_mem `0.3`, parsers `gemma4`, limit_mm `{"image": 4, "audio": 1}` |
+| Runtime | port `8000`, publish `8002`, gpu_device_ids `0`, ipc `host`, shm `32gb` |
+| Capabilities | tool calling, vision, **audio** |
+| Nginx | `client_max_body_size=100m`, `proxy_read_timeout=1800s` |
+
+```yaml
+profile_name: gemma-vllm
+frameworks:
+  - framework: vllm
+    mode: full
+    model:
+      name: cyankiwi/gemma-4-E4B-it-AWQ-INT4
+      context_length: 80000
+      quantization: awq
+    capabilities: { text: true, vision: true, audio: true, tool_calling: true }
+    port: 8000
+    publish_port: 8002
+    gpu_device_ids: ["0"]
+    ipc: host
+    shm_size: 32gb
+    vllm:
+      gpu_memory_utilization: 0.3
+      tool_call_parser: gemma4
+      reasoning_parser: gemma4
+      limit_mm_per_prompt: '{"image": 4, "audio": 1}'
+hf_token: hf_xxxxxxxx
+```
 
 For a fully custom start script, set **command_shell** on the Runtime step (overrides generated `vllm serve`).
 
