@@ -380,7 +380,7 @@ EOF
     chmod +x "$link_dir/local-llm-setup"
 
     if [ "$ROOT_FHS_LAYOUT" = false ]; then
-        ensure_local_bin_on_path "$link_dir"
+        ensure_local_bin_on_path
     fi
 
     export PATH="$link_dir:$PATH"
@@ -388,11 +388,6 @@ EOF
 }
 
 ensure_local_bin_on_path() {
-    local link_dir="$1"
-    case ":$PATH:" in
-        *":$link_dir:"*) return 0 ;;
-    esac
-
     local path_line='export PATH="$HOME/.local/bin:$PATH"'
     local shell_configs=()
 
@@ -400,12 +395,15 @@ ensure_local_bin_on_path() {
         */zsh) shell_configs+=("$HOME/.zshrc") ;;
         */bash)
             shell_configs+=("$HOME/.bashrc")
-            [ -f "$HOME/.bash_profile" ] && shell_configs+=("$HOME/.bash_profile")
+            shell_configs+=("$HOME/.bash_profile")
             ;;
+        *) shell_configs+=("$HOME/.profile") ;;
     esac
 
     for cfg in "${shell_configs[@]}"; do
-        [ -f "$cfg" ] || continue
+        if [ ! -f "$cfg" ]; then
+            touch "$cfg"
+        fi
         if ! grep -qE 'PATH=.*\.local/bin' "$cfg" 2>/dev/null; then
             {
                 echo ""
@@ -446,8 +444,6 @@ maybe_run_doctor() {
 }
 
 print_success() {
-    local cmd_dir
-    cmd_dir="$(get_command_link_dir)"
     echo ""
     echo -e "${GREEN}${BOLD}Installation complete!${NC}"
     echo ""
@@ -462,10 +458,10 @@ print_success() {
 
     if [ "$ROOT_FHS_LAYOUT" = true ]; then
         echo -e "${YELLOW}Command installed to /usr/local/bin/local-llm-setup${NC}"
-    elif ! echo ":$PATH:" | grep -q ":$cmd_dir:"; then
-        echo -e "${YELLOW}Reload your shell or run:${NC}"
+    else
+        echo -e "${YELLOW}Run this in your current shell (or open a new terminal):${NC}"
         echo ""
-        echo "  export PATH=\"$cmd_dir:\$PATH\""
+        echo '  export PATH="$HOME/.local/bin:$PATH"'
         echo ""
     fi
 }

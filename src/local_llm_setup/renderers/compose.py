@@ -63,9 +63,9 @@ def _service_volumes(fc: FrameworkConfig, output_dir: Path) -> list[str]:
 
 
 def _needs_gpu(fc: FrameworkConfig, host: HostInfo | None) -> bool:
-    plugin = get_plugin(fc.framework)
-    if fc.gpu_device_ids and plugin.meta.requires_gpu:
+    if fc.gpu_device_ids:
         return True
+    plugin = get_plugin(fc.framework)
     if not plugin.meta.requires_gpu:
         return host is not None and host.gpu_vendor == GPUVendor.NVIDIA
     if host is None:
@@ -271,9 +271,6 @@ def _build_service(fc: FrameworkConfig, config: SetupConfig) -> dict[str, Any]:
     elif cmd and fc.framework != Framework.LLAMACPP:
         service["command"] = cmd
 
-    if env:
-        service["environment"] = env
-
     if _needs_gpu(fc, host):
         device: dict[str, Any]
         if fc.gpu_device_ids:
@@ -296,6 +293,9 @@ def _build_service(fc: FrameworkConfig, config: SetupConfig) -> dict[str, Any]:
                 }
             }
         }
+
+    if env:
+        service["environment"] = env
 
     return _attach_network(service)
 

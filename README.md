@@ -5,6 +5,8 @@ TUI wizard for hosting local LLMs with **Ollama**, **vLLM**, **llama.cpp**, and 
 ## Features
 
 - Auto-detect OS (Linux, macOS, Windows/WSL), GPU, Docker, CUDA, ROCm, nginx
+- **Multi-GPU enumeration** — `doctor` and the TUI list every NVIDIA GPU with **nvidia-smi index** (`0`, `1`, `2`, …)
+- **Pin GPUs on any provider** — `gpu_device_ids` in Full → Runtime (Ollama, vLLM, llama.cpp, SGLang) → Docker `device_ids` + `NVIDIA_VISIBLE_DEVICES`
 - Keyboard-driven TUI (↑/↓ navigate, Space select, Enter confirm, `/` slash commands)
 - Deploy log with **Pretty** (colored Rich output) and **Copy mode** (`c` toggle — drag-select, Ctrl+C)
 - Quick or **full** configuration — every model, runtime, Docker, and nginx option per provider
@@ -29,10 +31,11 @@ TUI wizard for hosting local LLMs with **Ollama**, **vLLM**, **llama.cpp**, and 
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/PerasutRu/Local_LLM_setup/main/install.sh | bash
+export PATH="$HOME/.local/bin:$PATH"   # if the current shell does not see the command yet
 local-llm-setup tui
 ```
 
-The installer bootstraps **uv**, **Python 3.11**, clones the repo, creates a venv, and links `local-llm-setup` into `~/.local/bin`. Root installs on Linux use `/usr/local/lib/local-llm-setup` and `/usr/local/bin/local-llm-setup`.
+The installer bootstraps **uv**, **Python 3.11**, clones the repo, creates a venv, and links `local-llm-setup` into `~/.local/bin`. It also appends `export PATH="$HOME/.local/bin:$PATH"` to your shell rc (`.bashrc`, `.zshrc`, or `.profile`) when missing. **`curl | bash` runs in a subshell**, so you may need the `export` line above (or a new terminal) before `local-llm-setup` is found. Root installs on Linux use `/usr/local/lib/local-llm-setup` and `/usr/local/bin/local-llm-setup`.
 
 | Path | Purpose |
 |------|---------|
@@ -271,7 +274,7 @@ Access URLs printed after deploy use the same styling (gold headings, blue links
 
 **Quick** uses sensible defaults per provider (port, `bind_host`, `shm_size`, context length). Toggle **Bind to 0.0.0.0** under Capabilities to expose on LAN.
 
-**Full** adds a **Runtime & Docker** step — set `bind_host`, `port`, `publish_port`, GPU ids, volumes, etc. instead of the Quick “expose publicly” toggle.
+**Full** adds a **Runtime & Docker** step — set `bind_host`, `port`, `publish_port`, GPU ids, volumes, etc. instead of the Quick “expose publicly” toggle. Press **Enter** to move to the next field (same flow as Quick); **Enter on the last field** advances to the next wizard step. Tab still works to jump fields.
 
 Both modes let you override the provider Docker image (Quick: Model step; Full: Runtime step). Leave empty to use the default shown in the wizard.
 
@@ -303,8 +306,8 @@ Set a custom image in the TUI or profile YAML as `image_tag`. Example: `ollama/o
 | `shm_size` | Container shared memory | `8gb` / `16gb` | `32gb` for large models |
 | `extra_env` | Extra env vars (one `KEY=value` per line) | empty | `OLLAMA_NUM_PARALLEL=4` |
 | `extra_args` | Extra CLI args appended to serve command | empty | `--dtype auto` |
-| `gpu_count` | GPUs reserved when `gpu_device_ids` empty | `1` | `2`, `4` |
-| `gpu_device_ids` | Pin specific GPUs (comma-separated) | empty | `0`, `0,1` |
+| `gpu_count` | GPUs reserved when `gpu_device_ids` empty (vLLM/SGLang Full) | `1` | `2`, `4` |
+| `gpu_device_ids` | Pin specific GPUs — **nvidia-smi index** order (`0`, `1`, …); comma-separated in TUI | empty | `0`, `0,1` |
 | `ipc` | Docker IPC mode | empty | `host` (recommended for some vLLM setups) |
 | `extra_volumes` | Extra bind mounts (one per line) | empty | `/mnt/hf:/root/.cache/huggingface` |
 | `command_shell` | Bash script overriding generated start command | empty | vLLM advanced only |
@@ -320,7 +323,7 @@ Set a custom image in the TUI or profile YAML as `image_tag`. Example: `ollama/o
 | | Quick | Full extras |
 |---|-------|-------------|
 | **Model** | Ollama tag (`llama3.2`, `qwen2.5:7b`) | `context_length`, `OLLAMA_NUM_PARALLEL` |
-| **Runtime** | defaults (port `11434`, `shm_size=8gb`) | `port`, `bind_host`, `OLLAMA_MODELS`, `OLLAMA_HOST`, cache path |
+| **Runtime** | defaults (port `11434`, `shm_size=8gb`) | `port`, `bind_host`, `gpu_device_ids`, `OLLAMA_MODELS`, `OLLAMA_HOST`, cache path |
 | **After deploy** | `ollama pull <model>` (skipped if already local) | same |
 
 ```yaml
@@ -355,7 +358,7 @@ nginx: { enabled: true, listen_port: 8080, api_key_auth: true }
 |---|-------|-------------|
 | **Model** | GGUF path in container (`/models/foo.gguf`) or URL | `context_length`, `n_gpu_layers` → `--n-gpu-layers` |
 | **Cache** | bind `./model-llamacpp` → `/models` | custom `model_cache_host_path` |
-| **GPU** | optional (CPU ok; Metal on Apple Silicon) | tune layers via `n_gpu_layers` |
+| **GPU** | optional (CPU ok; Metal on Apple Silicon) | `n_gpu_layers`, `gpu_device_ids` (CUDA in Docker) |
 
 Place `.gguf` files in `llm_local/output/{profile}/model-llamacpp/` before deploy, or set a custom cache path.
 
@@ -386,7 +389,7 @@ Full mode maps to real-world `docker compose` setups (e.g. Gemma 4 multimodal wi
 | Setting | Full mode field | Compose effect |
 |---------|-----------------|----------------|
 | Host `8002` → container `8000` | `port` = `8000`, `publish_port` = `8002` | `ports: ["0.0.0.0:8002:8000"]` |
-| Pin GPU 0 | `gpu_device_ids` = `0` | `device_ids: ["0"]` + `NVIDIA_VISIBLE_DEVICES` |
+| Pin GPU 0 | `gpu_device_ids` = `0` | `device_ids: ["0"]` + `NVIDIA_VISIBLE_DEVICES` (all providers) |
 | Model cache path | `model_cache_host_path` | Host folder for downloaded models (default: `output/model-{provider}/`) |
 | HF cache volume | `extra_volumes` | Override container mount entirely (advanced; skips default cache mount when same container path) |
 | `ipc: host` | `ipc` = `host` | `ipc: host` |
@@ -502,6 +505,8 @@ Per profile under `llm_local/output/{profile_name}/`:
 When nginx is enabled, the framework binds on `0.0.0.0` inside the container (`OLLAMA_HOST=0.0.0.0:<port>`) and publishes that port on the host alongside nginx. An optional **cloudflared** sidecar provides a public `trycloudflare.com` URL.
 
 ## Troubleshooting
+
+**`local-llm-setup: command not found` after install** — The binary is at `~/.local/bin/local-llm-setup`. Run `export PATH="$HOME/.local/bin:$PATH"` in the current shell, open a new terminal, or `source ~/.bashrc`. The installer prints this hint and adds the export to your shell rc when possible.
 
 **Docker not found** — Install Docker Desktop (macOS/Windows) or run the [Docker install script](https://get.docker.com) on Linux.
 

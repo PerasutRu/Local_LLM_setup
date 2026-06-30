@@ -65,7 +65,12 @@ def doctor(
     console.print(f"\n[bold]Host:[/bold] {host.os_type.value} {host.os_version} ({host.arch})")
     if host.is_wsl:
         console.print("[dim]Running in WSL[/dim]")
-    if host.gpu_name:
+    if host.gpu_devices:
+        for device in host.gpu_devices:
+            console.print(
+                f"[bold]GPU {device.index}:[/bold] {device.name} ({device.vram_gb or '?'} GB VRAM)"
+            )
+    elif host.gpu_name:
         console.print(f"[bold]GPU:[/bold] {host.gpu_name} ({host.vram_gb or '?'} GB VRAM)")
     if host.ram_gb:
         console.print(f"[bold]RAM:[/bold] {host.ram_gb} GB")

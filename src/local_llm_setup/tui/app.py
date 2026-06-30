@@ -440,6 +440,56 @@ class LocalLLMSetupApp(App):
         except Exception:
             return
 
+    def _full_step_field_ids(self) -> list[str]:
+        fw = self.state.framework
+        if not fw:
+            return []
+        if self.step == "model":
+            return [f.id for f in model_fields(fw)]
+        if self.step == "runtime":
+            specs = setup_fields(self.state.profile_name) + runtime_fields(
+                fw, self.state.host, self.state.profile_name
+            )
+            return [f.id for f in specs]
+        if self.step == "nginx" and self.state.mode == ConfigMode.FULL:
+            return [f.id for f in nginx_basic_fields() + nginx_advanced_fields()]
+        return []
+
+    def _focus_first_choice(self, *choice_ids: str) -> None:
+        for choice_id in choice_ids:
+            try:
+                self.query_one(f"#{choice_id}", ChoiceList).focus()
+                return
+            except Exception:
+                continue
+
+    def _handle_full_field_enter(self, field_id: str) -> None:
+        if self.state.mode != ConfigMode.FULL:
+            return
+        field_ids = self._full_step_field_ids()
+        if field_id not in field_ids:
+            return
+
+        if self.step == "model":
+            self._sync_model_fields()
+            if field_id == field_ids[-1]:
+                if self.state.model_name:
+                    self._next()
+            else:
+                self._focus_next_field(field_id, field_ids)
+        elif self.step == "runtime":
+            self._sync_runtime_fields()
+            if field_id == field_ids[-1]:
+                self._next()
+            else:
+                self._focus_next_field(field_id, field_ids)
+        elif self.step == "nginx":
+            self._sync_nginx_fields()
+            if field_id == field_ids[-1]:
+                self._focus_first_choice("nginx-extra-choice", "nginx-choice")
+            else:
+                self._focus_next_field(field_id, field_ids)
+
     def _next(self) -> None:
         if self._step_idx < len(self._wizard_steps()) - 1:
             self._step_idx += 1
@@ -532,7 +582,15 @@ class LocalLLMSetupApp(App):
         body.mount(self._skill_line("os", f"{host.os_type.value} {host.arch}"))
         if host.is_wsl:
             body.mount(Static("  [dim]WSL detected[/dim]", classes="skill-line"))
-        if host.gpu_name:
+        if host.gpu_devices:
+            for device in host.gpu_devices:
+                body.mount(
+                    self._skill_line(
+                        f"gpu-{device.index}",
+                        f"GPU {device.index}: {device.name} ({device.vram_gb or '?'} GB VRAM)",
+                    )
+                )
+        elif host.gpu_name:
             body.mount(self._skill_line("gpu", f"{host.gpu_name} ({host.vram_gb or '?'} GB VRAM)"))
         if host.ram_gb:
             body.mount(self._skill_line("ram", f"{host.ram_gb} GB"))
@@ -725,7 +783,7 @@ class LocalLLMSetupApp(App):
             mount_fields(body, model_fields(fw), self._model_field_values())
             last_id = model_fields(fw)[-1].id
             self._update_footer(
-                "Tab through fields · Enter on last field to continue.",
+                "Enter moves to the next field · Enter on last field to continue.",
                 f"last field: {last_id}",
             )
             self.call_after_refresh(lambda: body.query_one(f"#{model_fields(fw)[0].id}", Input).focus())
@@ -782,7 +840,7 @@ class LocalLLMSetupApp(App):
         mount_fields(body, fields, values)
         last_id = fields[-1].id
         self._update_footer(
-            "Tab through fields · Enter on last field to continue.",
+            "Enter moves to the next field · Enter on last field to continue.",
             f"last field: {last_id}",
         )
         self.call_after_refresh(lambda: body.query_one("#profile-name-input", Input).focus())
@@ -847,6 +905,12 @@ class LocalLLMSetupApp(App):
                 self.query_one("#nginx-extra-choice", ChoiceList).set_checked(checked)
 
             self.call_after_refresh(_preset_nginx_extra)
+            nginx_fields = nginx_basic_fields() + nginx_advanced_fields()
+            self._update_footer(
+                "Enter moves to the next field · then choose nginx options below.",
+                f"last field: {nginx_fields[-1].id}",
+            )
+            self.call_after_refresh(lambda: body.query_one("#nginx-port", Input).focus())
         else:
             body.mount(self._section_label("listen_port:"))
             body.mount(Input(value=str(self.state.nginx_port), id="nginx-port"))
@@ -859,7 +923,8 @@ class LocalLLMSetupApp(App):
             ],
             id="nginx-choice",
         )
-        self._update_footer("Select nginx option and press Enter.", "↑↓ j/k navigate · Enter confirm")
+        if self.state.mode != ConfigMode.FULL:
+            self._update_footer("Select nginx option and press Enter.", "↑↓ j/k navigate · Enter confirm")
 
     def _step_summary(self) -> None:
         body = self.query_one("#step-body", VerticalScroll)
@@ -1699,7 +1764,7 @@ class LocalLLMSetupApp(App):
     @on(Input.Submitted, "#model-input")
     def on_model_submitted(self, event: Input.Submitted) -> None:
         if self.state.mode == ConfigMode.FULL:
-            self._sync_model_fields()
+            self._handle_full_field_enter("model-input")
             return
         self.state.model_name = event.value.strip()
         if not self.state.model_name:
@@ -1732,23 +1797,10 @@ class LocalLLMSetupApp(App):
     @on(Input.Submitted)
     def on_full_field_submitted(self, event: Input.Submitted) -> None:
         iid = event.input.id
-        if iid in ("command-input", "model-input", "image-tag-input"):
+        if iid in ("command-input", "model-input"):
             return
-        fw = self.state.framework
-        if self.step == "model" and self.state.mode == ConfigMode.FULL and fw:
-            self._sync_model_fields()
-            fields = model_fields(fw)
-            if iid == fields[-1].id and self.state.model_name:
-                self._next()
-            else:
-                self._focus_next_field(iid, [f.id for f in fields])
-        elif self.step == "runtime" and fw:
-            self._sync_runtime_fields()
-            fields = runtime_fields(fw, self.state.host, self.state.profile_name)
-            if iid == fields[-1].id:
-                self._next()
-            else:
-                self._focus_next_field(iid, [f.id for f in fields])
+        if self.state.mode == ConfigMode.FULL:
+            self._handle_full_field_enter(iid)
 
     @on(ChoiceList.Submitted, "#cap-choice")
     def on_capabilities(self, event: ChoiceList.Submitted) -> None:

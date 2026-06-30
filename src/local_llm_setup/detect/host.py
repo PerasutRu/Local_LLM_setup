@@ -12,6 +12,7 @@ from pathlib import Path
 from local_llm_setup.models.config import (
     CheckStatus,
     DoctorCheck,
+    GpuDevice,
     GPUVendor,
     HostInfo,
     OSType,
@@ -121,24 +122,39 @@ def detect_rocm() -> str | None:
     return None
 
 
+def detect_gpu_devices() -> list[GpuDevice]:
+    code, out = _run(
+        ["nvidia-smi", "--query-gpu=index,name,memory.total", "--format=csv,noheader,nounits"]
+    )
+    if code != 0 or not out:
+        return []
+
+    devices: list[GpuDevice] = []
+    for line in out.splitlines():
+        parts = [p.strip() for p in line.split(",", 2)]
+        if len(parts) < 2:
+            continue
+        idx, name = parts[0], parts[1]
+        vram: float | None = None
+        if len(parts) > 2:
+            try:
+                vram = round(float(parts[2]) / 1024, 1)
+            except ValueError:
+                pass
+        devices.append(GpuDevice(index=idx, name=name, vram_gb=vram))
+    return devices
+
+
 def detect_gpu() -> tuple[GPUVendor, str | None, float | None]:
     os_type, _, _ = detect_os()
 
     if os_type == OSType.MACOS and platform.machine() in ("arm64", "aarch64"):
         return GPUVendor.APPLE, "Apple Silicon", None
 
-    code, out = _run(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"])
-    if code == 0 and out:
-        line = out.splitlines()[0]
-        parts = [p.strip() for p in line.split(",")]
-        name = parts[0] if parts else "NVIDIA GPU"
-        vram = None
-        if len(parts) > 1:
-            try:
-                vram = round(float(parts[1]) / 1024, 1)
-            except ValueError:
-                pass
-        return GPUVendor.NVIDIA, name, vram
+    devices = detect_gpu_devices()
+    if devices:
+        first = devices[0]
+        return GPUVendor.NVIDIA, first.name, first.vram_gb
 
     if detect_rocm():
         return GPUVendor.AMD, "AMD GPU (ROCm)", None
@@ -211,6 +227,7 @@ def run_doctor() -> HostInfo:
     os_type, os_version, is_wsl = detect_os()
     arch = platform.machine()
     gpu_vendor, gpu_name, vram_gb = detect_gpu()
+    gpu_devices = detect_gpu_devices() if gpu_vendor == GPUVendor.NVIDIA else []
     ram_gb = detect_ram_gb()
     docker_ok, docker_ver = detect_docker()
     compose_ok, compose_ver = detect_compose()
@@ -236,7 +253,7 @@ def run_doctor() -> HostInfo:
     add(
         "gpu",
         gpu_vendor != GPUVendor.NONE,
-        f"GPU: {gpu_name} ({vram_gb} GB VRAM)" if gpu_name else "No GPU",
+        _gpu_check_message(gpu_vendor, gpu_name, vram_gb, gpu_devices),
         "No GPU detected — CPU-only inference",
         warn_only=True,
     )
@@ -289,6 +306,7 @@ def run_doctor() -> HostInfo:
         gpu_vendor=gpu_vendor,
         gpu_name=gpu_name,
         vram_gb=vram_gb,
+        gpu_devices=gpu_devices,
         ram_gb=ram_gb,
         docker_installed=docker_ok,
         docker_version=docker_ver,
@@ -301,6 +319,23 @@ def run_doctor() -> HostInfo:
         nginx_installed=nginx_ok,
         checks=checks,
     )
+
+
+def _gpu_check_message(
+    gpu_vendor: GPUVendor,
+    gpu_name: str | None,
+    vram_gb: float | None,
+    gpu_devices: list[GpuDevice],
+) -> str:
+    if not gpu_name:
+        return "No GPU"
+    if len(gpu_devices) <= 1:
+        return f"GPU: {gpu_name} ({vram_gb or '?'} GB VRAM)"
+    parts = [
+        f"GPU {d.index}: {d.name} ({d.vram_gb or '?'} GB)"
+        for d in gpu_devices
+    ]
+    return f"{len(gpu_devices)} GPUs — " + "; ".join(parts)
 
 
 def detect_host() -> HostInfo:

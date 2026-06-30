@@ -61,11 +61,13 @@ def test_full_mode_ollama_env_merged() -> None:
     state.ollama_parallel = "4"
     state.ollama_host = "0.0.0.0:11434"
     state.extra_env_text = "CUSTOM=1"
+    state.gpu_device_ids_text = "0,1"
 
     fc = state.build_config().frameworks[0]
     assert fc.extra_env["OLLAMA_NUM_PARALLEL"] == "4"
     assert fc.extra_env["OLLAMA_HOST"] == "0.0.0.0:11434"
     assert fc.extra_env["CUSTOM"] == "1"
+    assert fc.gpu_device_ids == ["0", "1"]
 
 
 def test_full_mode_llamacpp_ngl_in_extra_args() -> None:

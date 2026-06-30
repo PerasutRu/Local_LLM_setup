@@ -147,12 +147,6 @@ def vllm_runtime_fields() -> list[FieldSpec]:
             "publish_port",
             hint="Host port published (container listens on port above, e.g. 8002:8000)",
         ),
-        FieldSpec(
-            "gpu-device-ids-input",
-            "gpu_device_ids",
-            placeholder="0",
-            hint="Comma-separated GPU ids → device_ids + NVIDIA_VISIBLE_DEVICES",
-        ),
         FieldSpec("ipc-input", "ipc", placeholder="host", hint="Docker ipc mode (e.g. host)"),
         FieldSpec(
             "volumes-input",
@@ -167,6 +161,34 @@ def vllm_runtime_fields() -> list[FieldSpec]:
             hint="Optional: full bash -lc script (overrides generated vllm serve)",
         ),
     ]
+
+
+def gpu_device_ids_field(host: HostInfo | None = None) -> FieldSpec:
+    hint = (
+        "Comma-separated GPU indices (nvidia-smi order: 0, 1, 2, …) "
+        "→ device_ids + NVIDIA_VISIBLE_DEVICES"
+    )
+    if host and host.gpu_devices:
+        detected = "; ".join(
+            f"GPU {d.index}: {d.name} ({d.vram_gb or '?'} GB)" for d in host.gpu_devices
+        )
+        hint = f"{hint} · Detected: {detected}"
+    placeholder = host.gpu_devices[0].index if host and host.gpu_devices else "0"
+    return FieldSpec(
+        "gpu-device-ids-input",
+        "gpu_device_ids",
+        placeholder=placeholder,
+        hint=hint,
+    )
+
+
+def gpu_count_field() -> FieldSpec:
+    return FieldSpec(
+        "gpu-count-input",
+        "gpu_count",
+        default="1",
+        hint="GPU devices reserved when gpu_device_ids is empty",
+    )
 
 
 def docker_image_field(framework: Framework, host: HostInfo | None = None) -> FieldSpec:
@@ -212,11 +234,11 @@ def runtime_fields(
             hint="Extra CLI args appended to vllm serve",
         ),
     ]
+    gpu_fields = [gpu_device_ids_field(host)]
     if framework in (Framework.VLLM, Framework.SGLANG):
-        fields.insert(
-            4,
-            FieldSpec("gpu-count-input", "gpu_count", default="1", hint="GPU devices reserved (when gpu_device_ids empty)"),
-        )
+        gpu_fields.append(gpu_count_field())
+    for offset, spec in enumerate(gpu_fields):
+        fields.insert(4 + offset, spec)
     if framework == Framework.VLLM:
         fields.extend(vllm_runtime_fields())
     if framework == Framework.OLLAMA:

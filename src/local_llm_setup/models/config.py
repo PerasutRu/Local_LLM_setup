@@ -65,6 +65,14 @@ class DoctorCheck(BaseModel):
     hint: str | None = None
 
 
+class GpuDevice(BaseModel):
+    """One GPU as reported by nvidia-smi (index 0, 1, 2, …)."""
+
+    index: str
+    name: str
+    vram_gb: float | None = None
+
+
 class HostInfo(BaseModel):
     os_type: OSType = OSType.UNKNOWN
     os_version: str = ""
@@ -73,6 +81,7 @@ class HostInfo(BaseModel):
     gpu_vendor: GPUVendor = GPUVendor.UNKNOWN
     gpu_name: str | None = None
     vram_gb: float | None = None
+    gpu_devices: list[GpuDevice] = Field(default_factory=list)
     ram_gb: float | None = None
     docker_installed: bool = False
     docker_version: str | None = None
